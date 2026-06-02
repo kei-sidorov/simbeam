@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>simcast debug</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; margin: 16px; }
+    #sims button { display: block; margin: 4px 0; }
+    #screen { border: 1px solid #ccc; max-height: 80vh; cursor: crosshair; display: none; touch-action: none; }
+    #home { margin-top: 8px; display: none; }
+    #hint { margin-top: 6px; font-size: 12px; color: #666; display: none; }
+  </style>
+</head>
+<body>
+  <h3>Simulators</h3>
+  <div id="sims">loading…</div>
+  <img id="screen" alt="simulator">
+  <div id="hint">Click&nbsp;= tap · drag&nbsp;= swipe · keys typed here go to the device</div>
+  <div><button id="home">Home</button></div>
+
+<script>
+const simsEl = document.getElementById('sims');
+const screenEl = document.getElementById('screen');
+const homeBtn = document.getElementById('home');
+const hintEl = document.getElementById('hint');
+let ws = null;
+
+async function loadSims() {
+  const r = await fetch('/api/simulators');
+  const sims = await r.json();
+  simsEl.innerHTML = '';
+  sims.forEach(s => {
+    const b = document.createElement('button');
+    b.textContent = `${s.state === 'Booted' ? '▶' : '○'} ${s.name} (${s.os_version})`;
+    b.onclick = () => onPick(s);
+    simsEl.appendChild(b);
+  });
+}
+
+async function onPick(s) {
+  if (s.state !== 'Booted') {
+    const r = await fetch('/api/boot', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({udid: s.udid}),
+    });
+    if (!r.ok) { alert('boot failed: ' + (await r.text())); return; }
+  }
+  startStream(s.udid);
+}
+
+function startStream(udid) {
+  if (ws) ws.close();
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/session?udid=${encodeURIComponent(udid)}`);
+  ws.binaryType = 'blob';
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === 'string') { console.log('status', ev.data); return; }
+    const url = URL.createObjectURL(ev.data);
+    const old = screenEl.src;
+    screenEl.src = url;
+    screenEl.style.display = 'block';
+    homeBtn.style.display = 'inline-block';
+    hintEl.style.display = 'block';
+    if (old) URL.revokeObjectURL(old);
+  };
+  ws.onclose = () => { console.log('ws closed'); };
+}
+
+// Convert a pointer event to normalized {x, y} coords within the image, clamped to [0,1].
+function normCoords(e) {
+  const rect = screenEl.getBoundingClientRect();
+  const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+  return {x, y};
+}
+
+const SWIPE_THRESHOLD_PX = 6;
+let drag = null; // {x, y, clientX, clientY, t}
+
+screenEl.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  const coords = normCoords(e);
+  drag = {x: coords.x, y: coords.y, clientX: e.clientX, clientY: e.clientY, t: Date.now()};
+  screenEl.setPointerCapture(e.pointerId);
+});
+
+screenEl.addEventListener('pointerup', (e) => {
+  if (e.button !== 0 || !drag) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) { drag = null; return; }
+  const dx = e.clientX - drag.clientX;
+  const dy = e.clientY - drag.clientY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < SWIPE_THRESHOLD_PX) {
+    // Treat as tap using start coords.
+    ws.send(JSON.stringify({type: 'tap', x: drag.x, y: drag.y}));
+  } else {
+    const end = normCoords(e);
+    const duration = Math.max(0.05, (Date.now() - drag.t) / 1000);
+    ws.send(JSON.stringify({type: 'swipe', x1: drag.x, y1: drag.y, x2: end.x, y2: end.y, duration}));
+  }
+  drag = null;
+});
+
+screenEl.addEventListener('pointercancel', () => { drag = null; });
+
+// Keyboard capture — forward key events to the device while WS is open.
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
+
+window.addEventListener('keydown', (e) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (MODIFIER_KEYS.has(e.key)) return;          // ignore bare modifier press
+  if (e.ctrlKey || e.metaKey) return;             // let browser shortcuts through
+  e.preventDefault();
+  ws.send(JSON.stringify({type: 'key', key: e.key}));
+});
+
+homeBtn.onclick = () => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type: 'home'}));
+};
+
+loadSims();
+</script>
+</body>
+</html>

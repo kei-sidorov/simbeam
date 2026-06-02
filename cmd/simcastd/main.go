@@ -1,16 +1,19 @@
-// Command simcastd is the simcast daemon. For Phase 0 (Bootstrap) it exposes a
-// single `list` subcommand that prints the real simulators on this machine,
-// proving the Go-code -> idb_companion -> CoreSimulator chain end to end.
+// Command simcastd is the simcast daemon. Subcommands:
+//   - list: print the real simulators on this machine (Phase 0 bootstrap).
+//   - serve: run the REST API + WebSocket stream server (Phase 1).
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"text/tabwriter"
 	"time"
 
 	"github.com/kei-sidorov/simcast/internal/companion"
+	"github.com/kei-sidorov/simcast/internal/server"
 )
 
 func main() {
@@ -26,6 +29,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "serve":
+		if err := runServe(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage(os.Stdout)
 	default:
@@ -36,11 +44,32 @@ func main() {
 }
 
 func usage(w *os.File) {
-	fmt.Fprintln(w, "simcastd — simcast daemon (Phase 0 bootstrap)")
+	fmt.Fprintln(w, "simcastd — simcast daemon")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  simcastd list    List available iOS simulators via idb_companion")
+	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web)")
 	fmt.Fprintln(w, "  simcastd help    Show this help")
+}
+
+func runServe(argv []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fs.String("addr", ":8080", "listen address")
+	webDir := fs.String("web", "", "directory with debug client (served at /); empty = API only")
+	_ = fs.Parse(argv)
+
+	c := companion.New()
+	path, err := c.Resolve()
+	if err != nil {
+		return err
+	}
+	srv := server.New(c, *webDir).WithBinary(path)
+
+	fmt.Printf("simcastd serving on %s (idb_companion: %s)\n", *addr, path)
+	if *webDir != "" {
+		fmt.Printf("debug client: http://localhost%s/\n", *addr)
+	}
+	return http.ListenAndServe(*addr, srv.Handler())
 }
 
 func runList() error {

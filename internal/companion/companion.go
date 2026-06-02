@@ -131,6 +131,17 @@ func (c *Client) List(ctx context.Context) ([]Simulator, error) {
 	return sims, nil
 }
 
+// Boot boots the simulator with the given UDID via `idb_companion --boot <udid>`.
+// idb_companion blocks until the simulator reaches a known-booted state
+// (--verify-booted defaults to true). Booting an already-booted simulator is
+// effectively a no-op.
+func (c *Client) Boot(ctx context.Context, udid string) error {
+	if _, err := c.run(ctx, "--boot", udid); err != nil {
+		return err
+	}
+	return nil
+}
+
 // run executes idb_companion with the given args and returns its stdout. The
 // objc warning and CoreSimulator diagnostics are emitted on stderr, which is
 // only surfaced when the command fails.
