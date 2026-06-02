@@ -15,3 +15,7 @@
 | 8 | Дистрибуция: GoReleaser + Homebrew tap, prebuilt бинари | без нотаризации (brew не quarantine), `depends_on idb-companion` |
 | 9 | Open-core: сервер OSS, клиент платный | ров — в UX клиента и облачной инфре, не в доступе к серверу |
 | 10 | Первый прототип — JPEG-over-WS, WebRTC вторым шагом | увидеть результат за вечер, не утонуть в WebRTC сразу |
+| 11 | Module path `github.com/kei-sidorov/simcast` | по схеме `github.com/<user>/simcast`, выбрано пользователем |
+| 12 | `internal/companion` парсит вывод `--list 1` построчно, беря только строки-JSON с `udid` | companion мешает JSON-строки девайсов с диагностикой на stdout; objc-warning на stderr — парсим устойчиво к мусору |
+| 13 | Фильтруем `type != "Simulator"` в `List()` | скоуп — только симуляторы; companion заодно перечисляет подключённые реальные устройства |
+| 14 | Версию берём из `--version` (JSON `build_time`/`build_date`), не из brew | единственный источник версии у самого бинаря; brew-версия (1.1.8) — это пакет, не отчёт companion |

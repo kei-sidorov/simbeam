@@ -79,6 +79,31 @@ simcast/
 - **`idb_companion`**: `brew install idb-companion` (уже стоит у автора в `/opt/homebrew/bin/idb_companion`, v1.1.8).
 - **Go** (для разработки демона).
 
+## Запуск
+
+Нужен установленный Go (`brew install go`) и `idb_companion` в PATH.
+
+```bash
+go run ./cmd/simcastd list
+```
+
+Печатает реальный список симуляторов с машины — состояние, имя, версию iOS и UDID,
+например:
+
+```
+idb_companion: /opt/homebrew/bin/idb_companion (built Aug 12 2022 08:41:50)
+
+STATE     NAME           OS        UDID
+Booted    iPhone 17 Pro  iOS 26.4  6B0C54AC-4629-42FA-B9DA-ABBC39EF2027
+Shutdown  iPhone 14      iOS 16.0  900DA5DC-267C-44C9-ADF3-23DA510111F9
+...
+
+13 simulator(s).
+```
+
+Данные берутся из настоящего `idb_companion --list 1` (не заглушка). Реальные устройства
+отфильтровываются — скоуп проекта только симуляторы.
+
 ## С чего начать (Bootstrap)
 
 Открой папку агентом и попроси выполнить **Phase 0 (Bootstrap)** — см. `CLAUDE.md` и `docs/ROADMAP.md`.
