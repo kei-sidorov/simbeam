@@ -1,0 +1,13 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+/dist/            # GoReleaser output
+
+# macOS
+.DS_Store
+
+# Local env / logs
+*.log
+.env
