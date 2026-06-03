@@ -1,7 +1,6 @@
 package signalbroker
 
 import (
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -135,4 +134,83 @@ func TestJoinUnknownRoomErrors(t *testing.T) {
 	}
 }
 
-var _ = http.StatusOK // keep net/http import if unused after edits
+// When one side drops, the surviving peer is notified with peerLeft.
+func TestPeerLeftOnDisconnect(t *testing.T) {
+	srv := newTestServer(false)
+	defer srv.Close()
+
+	daemon := dial(t, srv)
+	defer daemon.Close()
+	if err := daemon.WriteJSON(signal.Msg{Type: signal.TypeRegister, Room: "tok", Role: signal.RoleDaemon, PubKey: "PK=="}); err != nil {
+		t.Fatal(err)
+	}
+
+	client := dial(t, srv)
+	if err := client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Room: "tok", Role: signal.RoleClient}); err != nil {
+		t.Fatal(err)
+	}
+	if ice := readMsg(t, client); ice.Type != signal.TypeICEServers {
+		t.Fatalf("want iceServers first, got %+v", ice)
+	}
+
+	// Client drops → daemon must receive peerLeft.
+	client.Close()
+	got := readMsg(t, daemon)
+	if got.Type != signal.TypePeerLeft {
+		t.Fatalf("daemon want peerLeft after client drop, got %+v", got)
+	}
+}
+
+// A stale daemon's cleanup must not sever a live client bound to a freshly
+// re-registered daemon on the same token (connection-identity guard).
+func TestReconnectDoesNotClobberLiveClient(t *testing.T) {
+	srv := newTestServer(false)
+	defer srv.Close()
+
+	d1 := dial(t, srv)
+	if err := d1.WriteJSON(signal.Msg{Type: signal.TypeRegister, Room: "tok", Role: signal.RoleDaemon, PubKey: "PK=="}); err != nil {
+		t.Fatal(err)
+	}
+
+	client := dial(t, srv)
+	defer client.Close()
+	if err := client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Room: "tok", Role: signal.RoleClient}); err != nil {
+		t.Fatal(err)
+	}
+	if ice := readMsg(t, client); ice.Type != signal.TypeICEServers {
+		t.Fatalf("want iceServers, got %+v", ice)
+	}
+
+	// Second daemon re-registers the same token (overwrites the daemon slot).
+	d2 := dial(t, srv)
+	defer d2.Close()
+	if err := d2.WriteJSON(signal.Msg{Type: signal.TypeRegister, Room: "tok", Role: signal.RoleDaemon, PubKey: "PK2=="}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Confirm d2's registration has been fully processed by the broker before
+	// closing d1: send a probe answer from d2 and verify the client receives it.
+	// This uses d2→client direction so there is no ambiguity about which daemon
+	// is in the slot — the relay only reaches the client if rm.daemon == d2.
+	if err := d2.WriteJSON(signal.Msg{Type: signal.TypeAnswer, SDP: "PROBE_ANS", Sig: "S=="}); err != nil {
+		t.Fatal(err)
+	}
+	if probe := readMsg(t, client); probe.Type != signal.TypeAnswer || probe.SDP != "PROBE_ANS" {
+		t.Fatalf("probe answer not relayed to client, got %+v", probe)
+	}
+
+	// Now d1 drops. Its deferred dropRoom must NOT notify/sever the client,
+	// because rm.daemon is d2, not d1.
+	d1.Close()
+
+	// The client offer must still reach the live daemon d2 (proves the room and
+	// client binding survived d1's cleanup).
+	if err := client.WriteJSON(signal.Msg{Type: signal.TypeOffer, SDP: "OFFER2"}); err != nil {
+		t.Fatal(err)
+	}
+	got := readMsg(t, d2)
+	if got.Type != signal.TypeOffer || got.SDP != "OFFER2" {
+		t.Fatalf("live daemon d2 want offer OFFER2, got %+v", got)
+	}
+}
+

@@ -123,6 +123,9 @@ func (b *Broker) serveDaemon(c *conn, reg signal.Msg) {
 		rm = &room{}
 		b.rooms[reg.Room] = rm
 	}
+	// One-shot pairing: a duplicate register for the same token simply
+	// overwrites the slot. dropRoom uses connection identity, so the stale
+	// connection's deferred cleanup will not clobber this one.
 	rm.daemon = c
 	b.mu.Unlock()
 
@@ -150,6 +153,8 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "no daemon for this token — rescan/repair"})
 		return
 	}
+	// One-shot pairing: a second client on the same token overwrites the slot
+	// (no "room full" rejection by design).
 	rm.client = c
 	b.mu.Unlock()
 
@@ -173,16 +178,15 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 func (b *Broker) relay(roomID, from string, m signal.Msg) {
 	b.mu.Lock()
 	rm := b.rooms[roomID]
-	b.mu.Unlock()
-	if rm == nil {
-		return
-	}
 	var dst *conn
-	if from == signal.RoleClient {
-		dst = rm.daemon
-	} else {
-		dst = rm.client
+	if rm != nil {
+		if from == signal.RoleClient {
+			dst = rm.daemon
+		} else {
+			dst = rm.client
+		}
 	}
+	b.mu.Unlock()
 	if dst != nil {
 		_ = dst.send(m)
 	}
