@@ -160,8 +160,16 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 
 	defer b.dropRoom(join.Room, c)
 
-	// Hand the client its ICE configuration (subscription-gated TURN).
-	_ = c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: b.iceServers(join.Room)})
+	// Hand both peers their ICE configuration (subscription-gated TURN). The
+	// daemon needs matching servers to gather srflx/relay candidates too.
+	ice := b.iceServers(join.Room)
+	_ = c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
+	b.mu.Lock()
+	dmn := rm.daemon
+	b.mu.Unlock()
+	if dmn != nil {
+		_ = dmn.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
+	}
 
 	for {
 		var m signal.Msg

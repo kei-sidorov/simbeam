@@ -72,6 +72,11 @@ func TestPairRelaysOfferAndAnswer(t *testing.T) {
 		t.Fatalf("want STUN url, got %+v", ice.ICEServers[0])
 	}
 
+	// Daemon also receives iceServers once the client joins.
+	if dice := readMsg(t, daemon); dice.Type != signal.TypeICEServers {
+		t.Fatalf("daemon want iceServers, got %+v", dice)
+	}
+
 	// Client offer is relayed to the daemon.
 	if err := client.WriteJSON(signal.Msg{Type: signal.TypeOffer, SDP: "OFFER_SDP"}); err != nil {
 		t.Fatal(err)
@@ -151,6 +156,10 @@ func TestPeerLeftOnDisconnect(t *testing.T) {
 	}
 	if ice := readMsg(t, client); ice.Type != signal.TypeICEServers {
 		t.Fatalf("want iceServers first, got %+v", ice)
+	}
+	// Daemon also receives iceServers when the client joins; drain it first.
+	if dice := readMsg(t, daemon); dice.Type != signal.TypeICEServers {
+		t.Fatalf("daemon want iceServers, got %+v", dice)
 	}
 
 	// Client drops → daemon must receive peerLeft.

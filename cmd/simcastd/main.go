@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"text/tabwriter"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/kei-sidorov/simcast/internal/companion"
 	"github.com/kei-sidorov/simcast/internal/server"
+	"github.com/kei-sidorov/simcast/internal/signal"
 )
 
 func main() {
@@ -48,7 +50,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  simcastd list    List available iOS simulators via idb_companion")
-	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web)")
+	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url)")
 	fmt.Fprintln(w, "  simcastd help    Show this help")
 }
 
@@ -56,6 +58,8 @@ func runServe(argv []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", ":8080", "listen address")
 	webDir := fs.String("web", "", "directory with debug client (served at /); empty = API only")
+	signalURL := fs.String("signal", "", "remote rendezvous: signaling broker WS URL (e.g. wss://host/ws); empty = local-only")
+	clientURL := fs.String("client-url", "", "base URL of the browser debug client for the pairing link; empty = http://localhost<addr>/")
 	_ = fs.Parse(argv)
 
 	c := companion.New()
@@ -65,11 +69,53 @@ func runServe(argv []string) error {
 	}
 	srv := server.New(c, *webDir).WithBinary(path)
 
+	// Remote rendezvous: dial the broker, print a pairing URL, serve one client.
+	if *signalURL != "" {
+		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir)
+	}
+
 	fmt.Printf("simcastd serving on %s (idb_companion: %s)\n", *addr, path)
 	if *webDir != "" {
 		fmt.Printf("debug client: http://localhost%s/\n", *addr)
 	}
 	return http.ListenAndServe(*addr, srv.Handler())
+}
+
+// runRemote dials the signaling broker and serves a single paired client. It
+// also serves the local HTTP (debug client) so the browser has somewhere to
+// load from; the pairing URL points there with the signaling coordinates in
+// the fragment.
+func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir string) error {
+	pubKey, priv, err := signal.GenerateKeyPair()
+	if err != nil {
+		return err
+	}
+	token, err := signal.NewToken()
+	if err != nil {
+		return err
+	}
+	base := clientURL
+	if base == "" {
+		base = "http://localhost" + addr + "/"
+	}
+
+	// Serve the debug client locally (so the browser can load it) in the
+	// background; pairing coordinates travel via the URL fragment, not this server.
+	if webDir != "" {
+		go func() {
+			if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
+				log.Printf("local http: %v", err)
+			}
+		}()
+	}
+
+	fmt.Printf("simcastd remote mode — broker: %s\n", signalURL)
+	fmt.Println("Pair this device by opening:")
+	fmt.Println("  " + signal.PairingURL(base, signalURL, token, pubKey))
+	fmt.Println("(token is one-time; restart to pair again)")
+
+	ctx := context.Background()
+	return srv.DialSignal(ctx, signalURL, token, pubKey, priv)
 }
 
 func runList() error {
