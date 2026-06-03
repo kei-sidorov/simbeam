@@ -5,6 +5,7 @@
 package rtc
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -12,12 +13,17 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 )
 
+// ErrNoControlChannel is returned by Send before the remote peer has opened
+// the "control" DataChannel.
+var ErrNoControlChannel = errors.New("rtc: control channel not open")
+
 // Session is one WebRTC peer connection: H.264 video out, control DataChannel in.
 type Session struct {
 	pc        *webrtc.PeerConnection
 	track     *webrtc.TrackLocalStaticSample
-	mu        sync.Mutex // guards onClose (set by caller, read on pion's goroutine)
+	mu        sync.Mutex // guards onClose and ctrl
 	onClose   func()
+	ctrl      *webrtc.DataChannel
 	closeOnce sync.Once
 }
 
@@ -43,6 +49,9 @@ func New(onControl func([]byte)) (*Session, error) {
 		if dc.Label() != "control" {
 			return
 		}
+		s.mu.Lock()
+		s.ctrl = dc
+		s.mu.Unlock()
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 			if onControl != nil {
 				onControl(msg.Data)
@@ -83,6 +92,21 @@ func (s *Session) Answer(offerSDP string) (string, error) {
 // WriteFrame writes one H.264 access unit to the video track.
 func (s *Session) WriteFrame(data []byte, dur time.Duration) error {
 	return s.track.WriteSample(media.Sample{Data: data, Duration: dur})
+}
+
+// Send delivers a control message to the remote peer over the "control"
+// DataChannel. Returns ErrNoControlChannel if the peer has not opened it yet.
+func (s *Session) Send(b []byte) error {
+	s.mu.Lock()
+	dc := s.ctrl
+	s.mu.Unlock()
+	if dc == nil {
+		return ErrNoControlChannel
+	}
+	// SendText (not Send): the browser client parses dc.onmessage via
+	// JSON.parse(ev.data), which requires a text frame; a binary frame would
+	// arrive as a Blob/ArrayBuffer and fail to parse.
+	return dc.SendText(string(b))
 }
 
 // OnClose registers a callback fired exactly once when the peer

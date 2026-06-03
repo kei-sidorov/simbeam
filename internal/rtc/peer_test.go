@@ -1,6 +1,7 @@
 package rtc
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -55,4 +56,16 @@ func TestSessionWriteFrameNoPanic(t *testing.T) {
 	}
 	defer sess.Close()
 	_ = sess.WriteFrame([]byte{0, 0, 0, 1, 0x65, 0x00}, 66)
+}
+
+func TestSessionSendBeforeChannel(t *testing.T) {
+	sess, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	// No control DataChannel has been opened by a remote peer yet.
+	if err := sess.Send([]byte(`{"type":"sims"}`)); !errors.Is(err, ErrNoControlChannel) {
+		t.Fatalf("want ErrNoControlChannel, got %v", err)
+	}
 }
