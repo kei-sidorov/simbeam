@@ -44,18 +44,43 @@
 QR  =  { signalingURL, pairingToken, daemonPubKey }
         │  iPad сканирует
         ▼
-[managed signaling]  WSS, всегда онлайн
+[managed signaling]  WSS, всегда онлайн — нужен ТОЛЬКО для первого рукопожатия
         │  сводит демон и клиент по pairingToken;
         │  аутентифицирует рукопожатие по daemonPubKey;
         │  отдаёт iceServers (STUN всем; TURN-creds только подписчикам)
         ▼
 WebRTC P2P между iPad и Mac:
-   • видео  ── H.264 media track ──────────────►  (Phase 2 пайплайн: screenshot→ffmpeg→pion)
-   • control + API  ── DataChannel (JSON) ──────►  list/boot/describe + tap/swipe/home/key
+   ┌─ control-плоскость (поднимается на пейринге, живёт всю сессию) ──────────┐
+   │  DataChannel (JSON):  list / boot / describe  +  tap/swipe/home/key      │
+   │  renegotiation (attach/detach видео) тоже по DataChannel — без signaling │
+   └──────────────────────────────────────────────────────────────────────────┘
+   ┌─ видео-плоскость (добавляется ON-DEMAND при выборе симулятора) ──────────┐
+   │  H.264 media track  ◄── Phase 2 пайплайн: screenshot→ffmpeg→pion         │
+   └──────────────────────────────────────────────────────────────────────────┘
    ICE сам выбирает путь: host (LAN) → srflx (STUN) → relay (TURN, платно)
         ▲
 Mac: simcastd (Go)  — только исходящие соединения, ноль открытых портов
 ```
+
+### Control-плоскость vs видео-плоскость (важно)
+
+PeerConnection — **не** про видео. Его поднимают на пейринге с одним DataChannel: без
+companion-сайдкара, без ffmpeg, почти бесплатно. Это даёт защищённый туннель для управления
+ДО того, как выбран какой-либо симулятор:
+
+1. **Пейринг/коннект:** PeerConnection + DataChannel (control-плоскость) поднимается сразу,
+   живёт всю сессию. UDID на этом этапе ещё нет.
+2. **Управление по DataChannel:** `list` симуляторов, `boot` выключенного, `describe` —
+   то, что раньше было REST/WS на localhost (Phase 1–2), теперь по тому же P2P-туннелю.
+3. **Выбор симулятора «смотреть»:** команда `attach <udid>` в DataChannel → демон спавнит
+   companion-сайдкар + ffmpeg для этого UDID и **добавляет H.264-трек в существующий
+   PeerConnection** (renegotiation, по возможности по самому DataChannel — signaling не трогаем).
+4. **Стоп/переключение:** `detach` → трек убираем, сайдкар + ffmpeg гасим; **DataChannel
+   остаётся жив**, список снова доступен.
+
+За NAT это и есть ответ «как получить список и забутить выключенный»: туннель поднят с момента
+подключения, list/boot идут по нему ещё до появления видео. Видео — «нагрузка» поверх готового
+туннеля, добавляется/снимается на лету.
 
 ### Компоненты
 
@@ -82,10 +107,15 @@ Mac: simcastd (Go)  — только исходящие соединения, н
   ARCHITECTURE; сами медиа уже E2E через DTLS-SRTP.
 
 **4. Транспортные изменения в `simcastd` (Go).**
-- Сейчас (Phase 1–2): REST `/api/*` + WS `/session` + WS `/rtc` на localhost.
+- Сейчас (Phase 1–2): REST `/api/*` + WS `/session` + WS `/rtc` на localhost; PeerConnection и
+  companion-сайдкар привязаны к UDID (`/rtc?udid=X`, решения №17, №30).
 - Для удалёнки: **весь control и API уезжают в WebRTC DataChannel.** Демон НЕ слушает публичных
-  портов; список/бут/`describe`/тачи — это JSON-команды в DataChannel (расширяем формат `/rtc`,
-  переиспользуя `parseControl`/`ScaleTap`/`hid` — граница из решения №30).
+  портов; список/бут/`describe`/тачи — это JSON-команды в DataChannel (переиспользуя
+  `parseControl`/`ScaleTap`/`hid` — граница из решения №30).
+- **PeerConnection становится per-client-session, а не per-UDID:** поднимается на пейринге без
+  UDID, с одним control-DataChannel. Выбор симулятора — команда `attach <udid>` в DataChannel,
+  которая триггерит спавн сайдкара + ffmpeg и attach видео-трека (renegotiation). Спавн остаётся
+  on-demand (как №17), но триггер переезжает с «WS-connect с udid» на «DataChannel attach udid».
 - Сетевой клиент демона: исходящий WSS к signaling, регистрация комнаты, обмен SDP/ICE.
 - Локальный режим (`--web`, localhost) сохраняется как есть для разработки/дебага.
 
@@ -132,6 +162,9 @@ Signaling и STUN открыты всем (копейки, можно rate-limit
 - Хостинг signaling/coturn: какой провайдер, регионы (латентность TURN важна).
 - Формат QR-payload и схема подписи рукопожатия (конкретный crypto-примитив).
 - Нужен ли demo/local signaling в OSS-демоне (чтобы self-host был возможен без облака).
+- Способ attach видео-трека: рантайм-renegotiation по DataChannel vs заранее объявленный
+  видео-transceiver-плейсхолдер, в который начинаем писать сэмплы при `attach` (проще, без
+  рантайм-renegotiation). Решаем спайком в плане.
 
 ## Сознательно отложено (не в этой фазе)
 
