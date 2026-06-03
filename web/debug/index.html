@@ -195,9 +195,9 @@ async function signalRemote(p, gen) {
 // WebCrypto. Returns false on any decode/verify failure.
 async function verifyAnswer(pubB64, sdp, sigB64) {
   try {
-    const pub = b64ToBytes(pubB64), sig = b64ToBytes(sigB64);
+    const pub = b64ToBytes(pubB64), sigBytes = b64ToBytes(sigB64);
     const key = await crypto.subtle.importKey('raw', pub, {name: 'Ed25519'}, false, ['verify']);
-    return await crypto.subtle.verify('Ed25519', key, sig, new TextEncoder().encode(sdp));
+    return await crypto.subtle.verify('Ed25519', key, sigBytes, new TextEncoder().encode(sdp));
   } catch (e) {
     console.error('answer verification error', e);
     return false;

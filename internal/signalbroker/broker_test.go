@@ -222,4 +222,3 @@ func TestReconnectDoesNotClobberLiveClient(t *testing.T) {
 		t.Fatalf("live daemon d2 want offer OFFER2, got %+v", got)
 	}
 }
-
