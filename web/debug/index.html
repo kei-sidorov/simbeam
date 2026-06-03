@@ -111,20 +111,22 @@ function pairing() {
 
 async function startControlPlane() {
   const gen = ++startGen;
+  const p = pairing(); // truthy in remote pairing mode (URL fragment present)
   pc = new RTCPeerConnection(window._iceServers ? {iceServers: window._iceServers} : undefined);
   pc.addTransceiver('video', {direction: 'recvonly'});
   dc = pc.createDataChannel('control', {ordered: false, maxRetransmits: 0});
 
   pc.ontrack = (ev) => { vidEl.srcObject = ev.streams[0]; minimizeBuffer(pc); showSurface(); };
-  const onFail = () => {
-    if (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed') showUpsell();
+  const onState = () => {
+    if (pc.iceConnectionState !== 'failed' && pc.connectionState !== 'failed') return;
+    if (p) showUpsell();                                // remote: relay/NAT failure → upsell
+    else console.log('rtc state', pc.connectionState);  // local: original behavior
   };
-  pc.oniceconnectionstatechange = onFail;
-  pc.onconnectionstatechange = onFail;
+  pc.oniceconnectionstatechange = onState;
+  pc.onconnectionstatechange = onState;
   dc.onopen = () => dc.send(JSON.stringify({type: 'list'}));
   dc.onmessage = (ev) => onCtrlReply(JSON.parse(ev.data));
 
-  const p = pairing();
   if (p) await signalRemote(p, gen);
   else await signalLocal(gen);
 }
