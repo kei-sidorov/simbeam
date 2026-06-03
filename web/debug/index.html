@@ -98,21 +98,39 @@ function onPick(s) {
 }
 
 // ---- RTC path: control plane + video on demand ----
+// Signaling is pluggable: local mode talks to /rtc; remote mode pairs through
+// the broker carried in the URL fragment (#signal&token&pubkey). The peer +
+// control DataChannel and all downstream control-plane logic are identical.
+
+function pairing() {
+  // Coordinates live in the URL fragment so they never hit a server log.
+  const f = new URLSearchParams(location.hash.slice(1));
+  const signal = f.get('signal'), token = f.get('token'), pubkey = f.get('pubkey');
+  return (signal && token && pubkey) ? {signal, token, pubkey} : null;
+}
+
 async function startControlPlane() {
   const gen = ++startGen;
-  pc = new RTCPeerConnection();
+  pc = new RTCPeerConnection(window._iceServers ? {iceServers: window._iceServers} : undefined);
   pc.addTransceiver('video', {direction: 'recvonly'});
   dc = pc.createDataChannel('control', {ordered: false, maxRetransmits: 0});
 
   pc.ontrack = (ev) => { vidEl.srcObject = ev.streams[0]; minimizeBuffer(pc); showSurface(); };
-  pc.onconnectionstatechange = () => {
-    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-      console.log('rtc state', pc.connectionState);
-    }
+  const onFail = () => {
+    if (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed') showUpsell();
   };
+  pc.oniceconnectionstatechange = onFail;
+  pc.onconnectionstatechange = onFail;
   dc.onopen = () => dc.send(JSON.stringify({type: 'list'}));
   dc.onmessage = (ev) => onCtrlReply(JSON.parse(ev.data));
 
+  const p = pairing();
+  if (p) await signalRemote(p, gen);
+  else await signalLocal(gen);
+}
+
+// Local dev signaling: one /rtc WS, offer→answer, no auth (localhost).
+async function signalLocal(gen) {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   await iceGatheringComplete(pc);
@@ -131,6 +149,75 @@ async function startControlPlane() {
       teardown();
     }
   };
+}
+
+// Remote rendezvous: join the broker room, receive iceServers, exchange a
+// signed offer/answer. The daemon signs its answer SDP; we verify it against
+// the pubkey from the pairing URL before trusting the connection (anti-MITM).
+async function signalRemote(p, gen) {
+  sig = new WebSocket(p.signal);
+  let sentOffer = false;
+
+  const makeAndSendOffer = async () => {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await iceGatheringComplete(pc);
+    if (gen !== startGen) return; // superseded
+    sig.send(JSON.stringify({type: 'offer', sdp: pc.localDescription.sdp}));
+    sentOffer = true;
+  };
+
+  sig.onopen = () => sig.send(JSON.stringify({type: 'join', room: p.token, role: 'client'}));
+  sig.onmessage = async (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'iceServers') {
+      window._iceServers = m.iceServers || [];
+      // Apply the issued iceServers before the first offer, then offer.
+      pc.setConfiguration({iceServers: window._iceServers});
+      if (!sentOffer) await makeAndSendOffer();
+    } else if (m.type === 'answer') {
+      const ok = await verifyAnswer(p.pubkey, m.sdp, m.sig);
+      if (!ok) { showAuthFail(); teardown(); return; }
+      await pc.setRemoteDescription({type: 'answer', sdp: m.sdp});
+      minimizeBuffer(pc);
+    } else if (m.type === 'error') {
+      alert('pairing error: ' + m.msg + '\nRescan / re-pair.');
+      teardown();
+    } else if (m.type === 'peerLeft') {
+      console.log('daemon left the room');
+    }
+  };
+}
+
+// verifyAnswer checks the daemon's Ed25519 signature over the answer SDP using
+// WebCrypto. Returns false on any decode/verify failure.
+async function verifyAnswer(pubB64, sdp, sigB64) {
+  try {
+    const pub = b64ToBytes(pubB64), sig = b64ToBytes(sigB64);
+    const key = await crypto.subtle.importKey('raw', pub, {name: 'Ed25519'}, false, ['verify']);
+    return await crypto.subtle.verify('Ed25519', key, sig, new TextEncoder().encode(sdp));
+  } catch (e) {
+    console.error('answer verification error', e);
+    return false;
+  }
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function showUpsell() {
+  alert('Could not connect peer-to-peer.\n\n' +
+        'Free tier has no relay (TURN) infrastructure — be on the same network ' +
+        'as your Mac, or subscribe for connect-from-anywhere.');
+}
+
+function showAuthFail() {
+  alert('Pairing authentication failed: the signaling answer was not signed by ' +
+        'the expected device key. Possible man-in-the-middle — do not proceed. Re-pair.');
 }
 
 function onCtrlReply(m) {
