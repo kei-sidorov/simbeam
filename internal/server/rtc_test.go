@@ -6,12 +6,15 @@ import (
 	"testing"
 )
 
-func TestHandleRTCMissingUDID(t *testing.T) {
-	s := New(nil, "")
-	req := httptest.NewRequest(http.MethodGet, "/rtc", nil) // no ?udid=
+// /rtc no longer requires ?udid= (UDID is chosen later via the control
+// DataChannel). A plain GET without WebSocket upgrade headers must be rejected
+// by the upgrader (400), not panic.
+func TestHandleRTCRejectsNonWebsocket(t *testing.T) {
+	s := New(&stubComp{}, "")
+	req := httptest.NewRequest(http.MethodGet, "/rtc", nil) // no upgrade headers
 	rec := httptest.NewRecorder()
 	s.handleRTC(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("want 400 for missing udid, got %d", rec.Code)
+		t.Fatalf("want 400 for non-websocket GET, got %d", rec.Code)
 	}
 }
