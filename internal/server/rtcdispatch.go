@@ -16,8 +16,8 @@ type ctrlReply struct {
 	Msg  string                `json:"msg,omitempty"`
 	Sims []companion.Simulator `json:"sims,omitempty"`
 	UDID string                `json:"udid,omitempty"`
-	W    uint64                `json:"w,omitempty"` // set in the "attached" reply (Task 4)
-	H    uint64                `json:"h,omitempty"` // set in the "attached" reply (Task 4)
+	W    uint64                `json:"w,omitempty"` // frame dimensions, set in the "attached" reply
+	H    uint64                `json:"h,omitempty"` // frame dimensions, set in the "attached" reply
 }
 
 // rtcDispatch is the per-session control plane. It owns at most one video
@@ -87,8 +87,9 @@ func (d *rtcDispatch) doInput(m controlMsg) {
 	att := d.att
 	d.mu.Unlock()
 	if att == nil {
-		return // no simulator attached → ignore input (real routing wired in Task 4)
+		return // no simulator attached → ignore input
 	}
+	applyControl(d.baseCtx, att.client, att.screen, m)
 }
 
 func (d *rtcDispatch) reply(v ctrlReply) {
@@ -98,13 +99,3 @@ func (d *rtcDispatch) reply(v ctrlReply) {
 	}
 	d.send(b)
 }
-
-// --- temporary stubs, replaced in Task 4 (attach.go) ---
-
-type attachment struct{} // real fields added in Task 4
-
-func (d *rtcDispatch) doAttach(string) {
-	d.reply(ctrlReply{Type: "error", Msg: "attach not wired yet"})
-}
-
-func (d *rtcDispatch) stopAttachment() {}
