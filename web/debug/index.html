@@ -37,13 +37,14 @@ const modeJpgBtn = document.getElementById('modeJpg');
 
 let mode = 'rtc';
 let currentUDID = null;
-let ws = null;           // jpg path
-let pc = null, dc = null, sig = null; // rtc path
-let startGen = 0;        // guards against a superseded startRTC resuming past its awaits
+let ws = null;                          // jpg path
+let pc = null, dc = null, sig = null;   // rtc path
+let startGen = 0;
 
 function surface() { return mode === 'rtc' ? vidEl : imgEl; }
 
 function teardown() {
+  startGen++; // invalidate any in-flight startControlPlane awaiting ICE
   if (ws) { ws.close(); ws = null; }
   if (sig) { try { sig.close(); } catch (e) {} sig = null; }
   if (dc) { try { dc.close(); } catch (e) {} dc = null; }
@@ -65,15 +66,23 @@ modeJpgBtn.onclick = () => setMode('jpg');
 function setMode(m) {
   if (m === mode) return;
   mode = m;
+  currentUDID = null;
   modeRtcBtn.classList.toggle('active', m === 'rtc');
   modeJpgBtn.classList.toggle('active', m === 'jpg');
   teardown();
-  if (currentUDID) start(currentUDID);
+  enterMode();
 }
 
-async function loadSims() {
-  const r = await fetch('/api/simulators');
-  const sims = await r.json();
+// Each mode populates the simulator list its own way:
+//   rtc → control plane comes up first, list arrives over the DataChannel
+//   jpg → REST (Phase 1 fallback)
+function enterMode() {
+  simsEl.innerHTML = 'loading…';
+  if (mode === 'rtc') startControlPlane();
+  else loadSimsREST();
+}
+
+function renderSims(sims) {
   simsEl.innerHTML = '';
   sims.forEach(s => {
     const b = document.createElement('button');
@@ -83,7 +92,91 @@ async function loadSims() {
   });
 }
 
-async function onPick(s) {
+function onPick(s) {
+  if (mode === 'rtc') pickRTC(s);
+  else pickJPG(s);
+}
+
+// ---- RTC path: control plane + video on demand ----
+async function startControlPlane() {
+  const gen = ++startGen;
+  pc = new RTCPeerConnection();
+  pc.addTransceiver('video', {direction: 'recvonly'});
+  dc = pc.createDataChannel('control', {ordered: false, maxRetransmits: 0});
+
+  pc.ontrack = (ev) => { vidEl.srcObject = ev.streams[0]; minimizeBuffer(pc); showSurface(); };
+  pc.onconnectionstatechange = () => {
+    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+      console.log('rtc state', pc.connectionState);
+    }
+  };
+  dc.onopen = () => dc.send(JSON.stringify({type: 'list'}));
+  dc.onmessage = (ev) => onCtrlReply(JSON.parse(ev.data));
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await iceGatheringComplete(pc);
+  if (gen !== startGen) return; // superseded
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  sig = new WebSocket(`${proto}://${location.host}/rtc`);
+  sig.onopen = () => sig.send(JSON.stringify({type: 'offer', sdp: pc.localDescription.sdp}));
+  sig.onmessage = async (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'answer') {
+      await pc.setRemoteDescription({type: 'answer', sdp: m.sdp});
+      minimizeBuffer(pc);
+    } else if (m.type === 'error') {
+      alert('rtc signaling error: ' + m.msg);
+      teardown();
+    }
+  };
+}
+
+function onCtrlReply(m) {
+  switch (m.type) {
+    case 'sims':
+      renderSims(m.sims || []);
+      break;
+    case 'booted':
+      // simulator is up; attach — unless the user re-picked a different one
+      if (m.udid !== currentUDID) break;
+      dc.send(JSON.stringify({type: 'attach', udid: m.udid}));
+      break;
+    case 'attached':
+      showSurface(); // currentUDID was set in pickRTC
+      break;
+    case 'detached':
+      vidEl.style.display = 'none';
+      break;
+    case 'error':
+      alert('rtc error: ' + m.msg);
+      break;
+  }
+}
+
+function pickRTC(s) {
+  if (!dc || dc.readyState !== 'open') { alert('control channel not ready'); return; }
+  currentUDID = s.udid;
+  vidEl.style.display = 'none'; // hide until new feed arrives
+  if (s.state !== 'Booted') {
+    dc.send(JSON.stringify({type: 'boot', udid: s.udid})); // → booted → attach
+  } else {
+    dc.send(JSON.stringify({type: 'attach', udid: s.udid}));
+  }
+}
+
+// ---- JPG path (Phase 1, unchanged transport) ----
+async function loadSimsREST() {
+  try {
+    const r = await fetch('/api/simulators');
+    renderSims(await r.json());
+  } catch (e) {
+    simsEl.innerHTML = 'failed to load simulators: ' + e;
+  }
+}
+
+async function pickJPG(s) {
   if (s.state !== 'Booted') {
     const r = await fetch('/api/boot', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -93,14 +186,9 @@ async function onPick(s) {
   }
   currentUDID = s.udid;
   teardown();
-  start(s.udid);
+  startJPG(s.udid);
 }
 
-function start(udid) {
-  if (mode === 'rtc') startRTC(udid); else startJPG(udid);
-}
-
-// ---- JPG path (Phase 1, unchanged) ----
 function startJPG(udid) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/session?udid=${encodeURIComponent(udid)}`);
@@ -114,43 +202,6 @@ function startJPG(udid) {
     if (old) URL.revokeObjectURL(old);
   };
   ws.onclose = () => { console.log('ws closed'); };
-}
-
-// ---- RTC path (Phase 2) ----
-async function startRTC(udid) {
-  const gen = ++startGen;
-  pc = new RTCPeerConnection();
-  pc.addTransceiver('video', {direction: 'recvonly'});
-  dc = pc.createDataChannel('control', {ordered: false, maxRetransmits: 0});
-  pc.ontrack = (ev) => {
-    vidEl.srcObject = ev.streams[0];
-    minimizeBuffer(pc);
-    showSurface();
-  };
-  pc.onconnectionstatechange = () => {
-    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-      console.log('rtc state', pc.connectionState);
-    }
-  };
-
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  await iceGatheringComplete(pc);
-  if (gen !== startGen) return; // superseded by a newer start(); pc already closed by teardown
-
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  sig = new WebSocket(`${proto}://${location.host}/rtc?udid=${encodeURIComponent(udid)}`);
-  sig.onopen = () => sig.send(JSON.stringify({type: 'offer', sdp: pc.localDescription.sdp}));
-  sig.onmessage = async (ev) => {
-    const m = JSON.parse(ev.data);
-    if (m.type === 'answer') {
-      await pc.setRemoteDescription({type: 'answer', sdp: m.sdp});
-      minimizeBuffer(pc);
-    } else if (m.type === 'error') {
-      alert('rtc error: ' + m.msg);
-      teardown();
-    }
-  };
 }
 
 // Minimize the receiver playout buffer for low latency (Chrome; try/catch for Safari).
@@ -186,7 +237,7 @@ function sendControl(obj) {
 
 function controlReady() {
   return mode === 'rtc'
-    ? (dc && dc.readyState === 'open')
+    ? (dc && dc.readyState === 'open' && currentUDID)
     : (ws && ws.readyState === WebSocket.OPEN);
 }
 
@@ -235,7 +286,7 @@ window.addEventListener('keydown', (e) => {
 
 homeBtn.onclick = () => sendControl({type: 'home'});
 
-loadSims();
+enterMode();
 </script>
 </body>
 </html>
