@@ -9,7 +9,8 @@ import (
 	"github.com/kei-sidorov/simcast/internal/idb"
 )
 
-// controlMsg is an upstream WS message from the client.
+// controlMsg is an inbound message from the client — over the JPEG /session
+// WebSocket or the WebRTC "control" DataChannel.
 type controlMsg struct {
 	Type     string  `json:"type"` // tap|home|swipe|key|list|boot|attach|detach
 	UDID     string  `json:"udid"` // boot, attach
