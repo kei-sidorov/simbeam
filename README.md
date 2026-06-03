@@ -174,7 +174,7 @@ JSON-формат, что в JPG-режиме (`tap`, `swipe`, `home`, `key`).
 WebRTC-пир с control-DataChannel; по нему идут `list`/`boot`/`attach`/`detach` и тачи. Видео-трек
 молчит, пока не выбран симулятор: `attach <udid>` спавнит сайдкар + ffmpeg и начинает писать H.264
 в существующий трек, `detach` (или новый `attach`) — останавливает и убивает сайдкар. Закрытие
-вкладки рвёт пир и тушит текущий сайдкар + ffmpeg. STUN/TURN и удалёнка — Plan 3b.
+вкладки рвёт пир и тушит текущий сайдкар + ffmpeg. STUN/TURN и удалёнка — ниже (Phase 3b).
 
 > Для `jitterBufferTarget=0` (тюнинг буфера браузера) рекомендуется **Chrome**; Safari этот
 > параметр игнорирует, но RTC-режим в нём работает.
@@ -186,6 +186,34 @@ WebRTC-пир с control-DataChannel; по нему идут `list`/`boot`/`atta
 > с фиксированным GOP ~10с без возможности управления keyframe'ами через gRPC. На резкой смене
 > сцены — артефакты до ~10с. Перейдя на свой ffmpeg-энкодер, мы владеем GOP и keyframe'ами.
 > Подробно — `docs/decisions.md` №34–38.
+
+### Удалёнка / рандеву (Phase 3b)
+
+Демон дозванивается до signaling-брокера (исходящий WSS, ноль открытых портов на
+Mac), регистрирует «комнату» по одноразовому `pairingToken` и печатает pairing-URL.
+Браузер открывает URL (координаты — `signalingURL` + `token` + `daemonPubKey` — в
+**фрагменте** `#…`, не в query), входит в комнату, обменивается offer/answer через
+брокер и **проверяет подпись answer'а** по `daemonPubKey` (анти-MITM, Ed25519). Видео
+и control идут P2P (DTLS-SRTP E2E); через брокер течёт только рукопожатие.
+
+Reference-брокер — `cmd/simcast-signal` (в этом репо). STUN раздаётся всем; TURN —
+только «подписчикам» (в этой фазе — стаб `--grant-turn`), по короткоживущим HMAC-кредам
+для готового `coturn` (свой TURN не пишем). Деплой — `deploy/README.md`.
+
+Локально (один хост, host-кандидаты):
+
+```bash
+# терминал 1 — брокер
+go run ./cmd/simcast-signal --addr :9000 --stun stun:stun.l.google.com:19302
+# терминал 2 — демон в remote-режиме
+go run ./cmd/simcastd serve --addr :8080 --web ./web/debug \
+  --signal ws://localhost:9000/ws --client-url http://localhost:8080/
+# открыть напечатанный pairing-URL в браузере
+```
+
+Сигналинг — **только рукопожатие**: один offer/answer, затем сокет закрывается;
+renegotiation нет (видео-трек pre-negotiated, решение #50). Реальный NAT/relay
+локально не проверить — см. `deploy/README.md` и «deploy-only» сценарии.
 
 ## С чего начать (Bootstrap)
 
