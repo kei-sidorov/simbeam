@@ -68,7 +68,7 @@ simcast/
 ├── CLAUDE.md                  # инструкции для агента + Definition of Done по фазам
 ├── docs/
 │   ├── ARCHITECTURE.md        # решения и их обоснование (контекст всех обсуждений)
-│   ├── ROADMAP.md             # фазы: 0 bootstrap → 1 JPEG MVP → 2 WebRTC → 3 клиент
+│   ├── ROADMAP.md             # фазы: 0 bootstrap → 1 JPEG → 2 WebRTC → 3 удалёнка → 4 дистрибуция
 │   └── decisions.md           # короткий лог принятых решений (ADR-lite)
 ├── cmd/simcastd/              # точка входа демона        (создаётся в Bootstrap)
 ├── internal/companion/        # обвязка над idb_companion  (создаётся в Bootstrap)

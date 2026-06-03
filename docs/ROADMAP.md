@@ -61,20 +61,41 @@ go run ./cmd/simcastd list
 
 ---
 
-## Phase 3 — нативный iPad-клиент (платная часть)
+## Phase 3 — Удалёнка / рандеву-сервер
 
-- Swift + GoogleWebRTC, приём трека, рендер, gesture-слой (tap/swipe/long-press/клавиатура).
-- Корректный маппинг координат + повороты/letterboxing.
+Полный дизайн — `docs/superpowers/specs/2026-06-03-phase4-remote-access-design.md`
+(имя файла историческое — это контент нынешней Phase 3).
+
+- **Signaling-сервер на Go** (`cmd/simcast-signal`): WSS-брокер «комнат» по `pairingToken`,
+  релей offer/answer + ICE, выписка короткоживущих TURN-кредов (HMAC).
+- **Транспортные изменения демона:** control- и видео-плоскости разведены. PeerConnection +
+  control-DataChannel поднимаются на пейринге (per-client-session, без UDID); list/boot/describe
+  и тачи — по DataChannel; видео-трек добавляется on-demand по `attach <udid>`, снимается по
+  `detach`. Демон делает только исходящее — ноль открытых портов.
+- **Pairing:** `pairingToken` + `daemonPubKey` (в браузере — через URL; QR — для нативного
+  клиента позже). Pubkey аутентифицирует рукопожатие (анти-MITM).
+- **STUN/TURN gating:** STUN всем; TURN только «подписчикам» (в этой фазе — стаб проверки);
+  free при `iceConnectionState=failed` → апселл. TURN-движок — готовый `coturn`, свой не пишем.
+- **Валидация — в браузере** (расширение Phase 2 `/rtc`-клиента). Нативный клиент НЕ нужен.
+
+**DoD:** в браузере через интернет (или эмуляцию сети) — пейринг по токену, список симуляторов
+и бут выключенного по DataChannel, выбор симулятора → видео по WebRTC, тачи по DataChannel;
+в одной сети P2P идёт напрямую (host), TURN не задействован.
 
 ---
 
-## Phase 4 — дистрибуция и удалёнка
+## Phase 4 — Дистрибуция + прод-облако
 
 - GoReleaser + Homebrew tap (`depends_on idb-companion`, `service` блок).
-- ICE по-взрослому: STUN + TURN (coturn), защита signaling.
-- Аккаунты/биллинг для клиента.
+- Деплой managed signaling + `coturn` в проде; защита signaling.
+- Аккаунты/биллинг (реальная проверка «подписчик?» вместо стаба из Phase 3).
 
 ---
+
+### Вне скоупа этого репозитория
+**Нативный iPad-клиент** (Swift + GoogleWebRTC, рендер трека, жесты, сканер QR, маппинг
+координат/повороты/letterboxing) делается **в отдельном репозитории** и **только когда серверная
+часть здесь готова и проверена в браузере**. Это платный продукт; здесь — open-source сервер.
 
 ### Что НЕ делать раньше времени
 Адаптивный битрейт, свой ScreenCaptureKit-пайплайн, бандлинг companion'а, нотаризация GUI,
