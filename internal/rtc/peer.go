@@ -28,9 +28,11 @@ type Session struct {
 }
 
 // New creates a peer with one H.264 video track and routes inbound "control"
-// DataChannel messages to onControl (nil to ignore).
-func New(onControl func([]byte)) (*Session, error) {
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+// DataChannel messages to onControl (nil to ignore). iceServers configures ICE
+// gathering: nil/empty yields host candidates only (localhost dev); STUN/TURN
+// entries enable srflx/relay for remote rendezvous.
+func New(onControl func([]byte), iceServers []webrtc.ICEServer) (*Session, error) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: iceServers})
 	if err != nil {
 		return nil, err
 	}

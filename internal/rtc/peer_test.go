@@ -35,7 +35,7 @@ func makeOffer(t *testing.T) string {
 }
 
 func TestSessionAnswer(t *testing.T) {
-	sess, err := New(nil)
+	sess, err := New(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestSessionAnswer(t *testing.T) {
 }
 
 func TestSessionWriteFrameNoPanic(t *testing.T) {
-	sess, err := New(nil)
+	sess, err := New(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestSessionWriteFrameNoPanic(t *testing.T) {
 }
 
 func TestSessionSendBeforeChannel(t *testing.T) {
-	sess, err := New(nil)
+	sess, err := New(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,5 +67,20 @@ func TestSessionSendBeforeChannel(t *testing.T) {
 	// No control DataChannel has been opened by a remote peer yet.
 	if err := sess.Send([]byte(`{"type":"sims"}`)); !errors.Is(err, ErrNoControlChannel) {
 		t.Fatalf("want ErrNoControlChannel, got %v", err)
+	}
+}
+
+func TestNewWithICEServersBuilds(t *testing.T) {
+	sess, err := New(nil, []webrtc.ICEServer{
+		{URLs: []string{"stun:stun.example:3478"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	// A valid configuration must still answer an offer (STUN unreachable in the
+	// test is fine — non-trickle gathering completes with host candidates).
+	if _, err := sess.Answer(makeOffer(t)); err != nil {
+		t.Fatalf("Answer with iceServers configured: %v", err)
 	}
 }
