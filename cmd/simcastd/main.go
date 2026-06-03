@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"text/tabwriter"
@@ -101,9 +102,14 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir string) er
 
 	// Serve the debug client locally (so the browser can load it) in the
 	// background; pairing coordinates travel via the URL fragment, not this server.
+	// Pre-bind synchronously so a port conflict surfaces before the pairing URL is printed.
 	if webDir != "" {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("local http listen on %s: %w", addr, err)
+		}
 		go func() {
-			if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
+			if err := http.Serve(ln, srv.Handler()); err != nil {
 				log.Printf("local http: %v", err)
 			}
 		}()
