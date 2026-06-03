@@ -11,7 +11,8 @@ import (
 
 // controlMsg is an upstream WS message from the client.
 type controlMsg struct {
-	Type     string  `json:"type"` // "tap" | "home" | "swipe" | "key"
+	Type     string  `json:"type"` // tap|home|swipe|key|list|boot|attach|detach
+	UDID     string  `json:"udid"` // boot, attach
 	X        float64 `json:"x"`
 	Y        float64 `json:"y"`
 	X1       float64 `json:"x1"`
@@ -60,7 +61,7 @@ func parseControl(data []byte) (controlMsg, error) {
 		return m, fmt.Errorf("bad control json: %w", err)
 	}
 	switch m.Type {
-	case "tap", "home", "swipe", "key":
+	case "tap", "home", "swipe", "key", "list", "boot", "attach", "detach":
 		return m, nil
 	default:
 		return m, fmt.Errorf("unknown control type %q", m.Type)

@@ -47,3 +47,31 @@ func TestParseControlKey(t *testing.T) {
 		t.Fatalf("unexpected: %+v err %v", m, err)
 	}
 }
+
+func TestParseControlManagementTypes(t *testing.T) {
+	cases := []struct {
+		in   string
+		typ  string
+		udid string
+	}{
+		{`{"type":"list"}`, "list", ""},
+		{`{"type":"boot","udid":"ABC"}`, "boot", "ABC"},
+		{`{"type":"attach","udid":"XYZ"}`, "attach", "XYZ"},
+		{`{"type":"detach"}`, "detach", ""},
+	}
+	for _, c := range cases {
+		m, err := parseControl([]byte(c.in))
+		if err != nil {
+			t.Fatalf("parseControl(%s): %v", c.in, err)
+		}
+		if m.Type != c.typ || m.UDID != c.udid {
+			t.Fatalf("parseControl(%s) = {%q,%q}, want {%q,%q}", c.in, m.Type, m.UDID, c.typ, c.udid)
+		}
+	}
+}
+
+func TestParseControlUnknownStillErrors(t *testing.T) {
+	if _, err := parseControl([]byte(`{"type":"explode"}`)); err == nil {
+		t.Fatal("want error for unknown type, got nil")
+	}
+}
