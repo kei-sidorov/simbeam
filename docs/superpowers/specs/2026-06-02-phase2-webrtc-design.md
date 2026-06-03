@@ -1,202 +1,202 @@
 # Phase 2 — WebRTC (низкая задержка): дизайн
 
 **Дата:** 2026-06-02
-**Статус:** утверждён к реализации
+**Статус:** утверждён к реализации (пересмотрен после спайка)
 **Предшествующее:** Phase 1 (JPEG/screenshot MVP) — `2026-06-02-phase1-jpeg-mvp-design.md`
+
+> **Пересмотр после спайка (2026-06-02).** Исходный замысел — отдавать сырой H.264 из
+> idb `video_stream` в pion без перекодирования. Спайк это опроверг: idb шлёт IDR раз в
+> ~10с и не вставляет keyframe на смену сцены (в gRPC нет управления GOP). Артефакты до
+> ~10с на резких сменах. Решение пересмотрено (decisions №34–38): **захватываем кадры
+> через `screenshot` (путь Phase 1) и кодируем H.264 сами через `ffmpeg`
+> (`h264_videotoolbox`, короткий GOP) — мы владеем энкодером и keyframe'ами.** Спайк
+> подтвердил: идеальное качество, артефактов нет, ~0.7с задержки @15fps localhost.
 
 ## Цель
 
 Низколатентный H.264-поток с симулятора на клиента по WebRTC, тачи по WebRTC
-DataChannel. H.264 идёт из `idb_companion` `video_stream` в pion-трек **без
-перекодирования** (`TrackLocalStaticSample`). Клиент Phase 2 — браузерный
-debug-клиент (нативный iPad остаётся Phase 3).
+DataChannel. Кадры захватываются через idb `screenshot` и кодируются в H.264 нашим
+`ffmpeg`-подпроцессом (аппаратный `h264_videotoolbox`, короткий GOP — keyframe раз в
+~1–2с), затем без дальнейшего перекодирования пишутся в pion `TrackLocalStaticSample`.
+Клиент Phase 2 — браузерный debug-клиент (нативный iPad остаётся Phase 3).
 
-**Definition of Done:** в браузере (режим RTC) видно живой низколатентный
-H.264-поток по WebRTC; тачи/свайпы/Home/клавиатура проходят по DataChannel;
-старый JPG-режим (Phase 1) продолжает работать как fallback.
+**Definition of Done:** в браузере (режим RTC) видно живой H.264-поток по WebRTC с
+ощутимо низкой задержкой (суб-секунда) и без артефактов на сменах сцены; тачи/свайпы/
+Home/клавиатура проходят по DataChannel; старый JPG-режим (Phase 1) работает как fallback.
 
 ## Принятые решения этой фазы
 
-- **Клиент Phase 2 — браузерный debug-клиент.** Нативный iPad-клиент остаётся
-  Phase 3. Браузер нативно принимает H.264 по WebRTC и рендерит в `<video>`.
-- **Оба пути сосуществуют.** WebRTC — основной, JPEG/WS (`/session`) остаётся как
-  fallback и debug. Phase 1 не трогаем.
-- **Спайк первым шагом (шаг 0).** Главный неизвестный риск — скормить H.264 из
-  `video_stream` в pion. История MJPEG (решение №22: на companion 1.1.8 MJPEG
-  отдаёт один кадр и замирает) обязывает доказать пайплайн до постройки обвязки.
-- **Подход A:** отдельный пакет `internal/rtc` (вся pion-логика) + отдельный
-  WS-эндпоинт `/rtc`. `server.go` регистрирует роут одной строкой, роутинг в
-  pion-логику не протекает. Команды ввода НЕ дублируются — переиспользуем
-  `parseControl` / `keymap` / `ScaleTap` / `hid`.
-- **Тачи — по DataChannel** (unreliable/unordered). Инкрементально дёшево (peer
-  уже поднят ради видео), по роадмапу, один P2P-линк, готовность к Phase 4 (TURN).
-- **Сигналинг — один WS-заход offer→answer, non-trickle.** Браузер — инициатор
-  (recvonly видео + создаёт DataChannel), демон отвечает. ICE-кандидаты внутри SDP
-  (на localhost сбор мгновенный). Только host-кандидаты, без STUN/TURN (решение №7).
+- **Клиент Phase 2 — браузерный debug-клиент.** Нативный iPad — Phase 3. Браузер нативно
+  принимает H.264 по WebRTC и рендерит в `<video>`.
+- **Оба пути сосуществуют.** WebRTC — основной, JPEG/WS (`/session`) — fallback и debug.
+  Phase 1 не трогаем. Оба пути используют один и тот же источник — idb `screenshot`.
+- **Видеопайплайн (decisions №34–37):** idb `screenshot` (PNG-поллинг) → `ffmpeg`
+  (`h264_videotoolbox`, короткий GOP, low-latency флаги) → H.264 Annex-B → парсинг в
+  access unit'ы → pion `TrackLocalStaticSample`. Мы владеем энкодером, поэтому keyframe'ы
+  под нашим контролем — это и устраняет проблему idb-GOP.
+- **`ffmpeg` — обязательная внешняя зависимость** (подпроцесс, как idb; brew
+  `depends_on ffmpeg`). idb по-прежнему захватывает экран — мы лишь перекодируем его
+  вывод; это НЕ «свой capture-пайплайн» (тот остаётся отложен).
+- **Подход A:** пион-логика в `internal/rtc`; парсинг H.264 + энкодер-подпроцесс в
+  `internal/encoder`; WS-эндпоинт `/rtc` и оркестрация — в пакете `server`, который
+  переиспользует `parseControl`/`ScaleTap`/`hid` (ввод не дублируется).
+- **Тачи — по WebRTC DataChannel** (unreliable/unordered).
+- **Сигналинг — один WS-заход offer→answer, non-trickle, браузер-инициатор;** только
+  host-кандидаты, без STUN/TURN.
 
 ## Архитектура
 
 ```
 Браузер (web/debug)
-  RTCPeerConnection ──video◄── H.264 трек ──┐
+  RTCPeerConnection ──video◄── H.264 трек ──┐   (receiver.jitterBufferTarget=0)
   DataChannel ───────тачи──►────────────────┤
                                             ▼
 Mac: simcastd (Go)
+  ├─ REUSE internal/idb: Spawn (сайдкар), Describe, ScreenshotStream (PNG-кадры), hid
+  ├─ NEW  internal/encoder/    — PNG-кадры → H.264 access unit'ы
+  │        ├─ ffmpeg.go         — спавн ffmpeg(h264_videotoolbox), stdin PNG / stdout H.264
+  │        └─ nal.go            — Annex-B NAL-сплиттер + сборка access unit'ов (из спайка)
   ├─ NEW  internal/rtc/        — pion peer, H.264-трек, обмен SDP, DataChannel→control
-  │        ├─ peer.go          — PeerConnection, TrackLocalStaticSample, pump кадров
-  │        └─ signal.go        — WS /rtc?udid=X: offer→answer (non-trickle)
-  ├─ NEW  internal/idb: VideoStream(ctx, fps) (<-chan Frame, error) — video_stream H264 → access units
-  ├─ REUSE internal/idb: Spawn (сайдкар), Describe, Tap/Swipe/Home/KeyPress (hid)
-  ├─ REUSE internal/server: parseControl, keymap, ScaleTap — те же JSON-команды по DataChannel
-  └─ REUSE /session (JPEG/WS) — без изменений, fallback
+  │        ├─ peer.go           — PeerConnection, TrackLocalStaticSample, Answer, WriteFrame
+  │        └─ (signaling — в server)
+  ├─ REUSE internal/server: parseControl, keymap, ScaleTap, applyControl(нов.)
+  ├─ NEW  internal/server/rtc.go — WS /rtc: sidecar→ScreenshotStream→encoder→pion + DataChannel→control
+  └─ REUSE /session (JPEG/WS) — без изменений, fallback (тоже на screenshot)
               │
               ▼
-        idb_companion (sidecar) → iOS Simulator
+        idb_companion (sidecar) ──screenshot──► iOS Simulator
+              ⇣ (PNG)            └─ hid ◄── тачи
+          ffmpeg (h264_videotoolbox)
 ```
 
 **Границы компонентов:**
-- `internal/rtc` — единственное место, где живёт pion. Знает про SDP, треки,
-  DataChannel. Не знает про HTTP-роутинг, не парсит команды сам (зовёт `parseControl`).
-- `internal/idb` прирастает одним методом `VideoStream` — симметрично
-  `ScreenshotStream`. H.264-нарезка изолирована здесь, про WebRTC метод не знает.
-- Управление переиспользует `parseControl` + `ScaleTap` + `hid` без дублирования —
-  DataChannel подаёт туда те же байты, что сейчас подаёт WS `/session`.
+- `internal/encoder` — единственное место, где живёт H.264 (ffmpeg-подпроцесс +
+  Annex-B-парсинг). Вход — канал PNG-кадров (`<-chan []byte`), выход — канал
+  `Frame{Data, Duration}`. Не знает про idb, pion, HTTP.
+- `internal/rtc` — единственное место, где живёт pion. Speaks raw SDP, принимает
+  `onControl([]byte)`. Не знает про idb/encoder/HTTP/команды.
+- `internal/idb` — без изменений для Phase 2: переиспользуем `ScreenshotStream`, `Spawn`,
+  `Describe`, `hid`. `VideoStream` НЕ добавляем (от idb-H.264 отказались).
+- Пакет `server` оркеструет: spawn → ScreenshotStream → encoder → rtc.Session, и
+  DataChannel-сообщения гонит через `parseControl`+`applyControl` (тот же код, что `/session`).
 
-**Новая зависимость:** `github.com/pion/webrtc/v4` (+ H.264-хелперы pion). Остальное
-уже в go.mod.
+**Зависимости:** `github.com/pion/webrtc/v4` (в go.mod), внешний бинарь `ffmpeg` с
+энкодером `h264_videotoolbox` (проверяется в рантайме).
 
-## Шаг 0 — спайк (снятие риска)
-
-Минимальный вертикальный срез, доказывающий, что H.264 от idb непрерывно течёт и
-доходит до браузера движущейся картинкой. Сигналинг — самый дубовый (HTTP POST
-offer→answer или захардкоженный обмен); он тут НЕ предмет проверки.
-
-**Состав:**
-- Черновой `idb.VideoStream`: открыть `video_stream` с `Format=H264`, читать payload,
-  логировать размер/частоту чанков (подтвердить непрерывность, а не «один кадр и замер»).
-- Прогон байтов через H.264-парсер (pion `h264reader` / NAL-сплит) → access unit'ы.
-- Минимальный pion: один `TrackLocalStaticSample`, `WriteSample` каждым кадром.
-- Страница-заглушка с одним `<video>`.
-
-**Критерий прохождения:** в браузере видно непрерывное движущееся видео симулятора
-(меняешь экран — картинка меняется в реальном времени). Латентность НЕ замеряем.
-
-**Если не проходит** (H.264 кривой/прерывистый): фиксируем находку в `decisions.md`,
-Phase 2 разворачивается (транскодинг или video-to-file) — отдельный разговор, только
-если упрёмся.
-
-**Судьба кода:** ядро ингеста (`VideoStream`) дочищается до продакшна; дубовый
-сигналинг выбрасывается; страница-заглушка вливается в `web/debug`.
-
-## Компонент: H.264-ингест (`internal/idb.VideoStream`)
-
-Продакшн-версия ядра из спайка, рядом с `ScreenshotStream`.
+## Компонент: энкодер (`internal/encoder`)
 
 ```go
 type Frame struct {
-    Data     []byte        // один access unit (H.264 NAL'ы, Annex-B)
-    Duration time.Duration // для media.Sample; из fps
+    Data     []byte        // один H.264 access unit (NAL'ы в Annex-B, со start-кодами)
+    Duration time.Duration // 1/fps, для media.Sample
 }
-func (c *Client) VideoStream(ctx context.Context, fps uint64) (<-chan Frame, error)
+
+// Encode спавнит ffmpeg(h264_videotoolbox), пишет PNG-кадры из png в его stdin,
+// читает H.264 из stdout, режет на NAL'ы, собирает access unit'ы и эмитит Frame
+// до закрытия ctx (тогда канал закрывается, ffmpeg убивается).
+func Encode(ctx context.Context, png <-chan []byte, fps int) (<-chan Frame, error)
+
+// Available проверяет, что ffmpeg и энкодер h264_videotoolbox доступны.
+func Available() error
 ```
 
-- Открывает `video_stream` gRPC-стрим с `Start{Format: H264, Fps: fps, ScaleFactor: 1.0}`.
-  `fps` старт = **30**; `CompressionQuality`/`ScaleFactor` — дефолты (решение №23,
-  качество пока не крутим).
-- Читает `VideoStreamResponse`, склеивает payload, режет на NAL'ы, собирает в
-  access unit'ы.
-- SPS/PPS: отдаём access unit'ы как есть — pion `TrackLocalStaticSample` обрабатывает
-  параметрические NAL'ы при упаковке в RTP. (Подтверждается спайком.)
-- `Duration` из `fps` (1/30 c). Если idb проставляет надёжные PTS — используем их,
-  иначе равномерный шаг. (Подтверждается спайком.)
-- На `ctx.Done()` — закрыть gRPC-стрим и канал. Транзиентные ошибки — лог + продолжаем
-  (как `ScreenshotStream`); фатальная — закрыть канал, сессия рвётся.
+**ffmpeg argv (подтверждено спайком, low-latency):**
+```
+ffmpeg -hide_banner -loglevel warning \
+  -fflags nobuffer -flags low_delay -analyzeduration 0 \
+  -f image2pipe -vcodec png -framerate <fps> -i pipe:0 \
+  -an -c:v h264_videotoolbox -realtime 1 -profile:v baseline -g <fps*2> -b:v 8M -pix_fmt yuv420p \
+  -flush_packets 1 -max_delay 0 -f h264 pipe:1
+```
+- `-analyzeduration 0` критичен: иначе демуксер `image2pipe` набирает ~3с стартового
+  бэклога, который держится константно (decision №37).
+- `baseline` + `-f h264` → Annex-B без B-кадров (то, что ждёт H.264-пакетайзер pion).
+- `-g <fps*2>` ≈ keyframe раз в ~2с (тюнится).
+- idb `screenshot` отдаёт **PNG** (у `ScreenshotRequest` нет поля формата) → вход
+  `-f image2pipe -vcodec png`.
 
-**Решается на спайке (не в дизайне):** точный fps, нужно ли руками разделять SPS/PPS,
-есть ли у idb надёжные PTS, конкретный H.264-профиль.
+**Парсинг H.264 (баги, найденные спайком — обязательны):**
+- NAL-сплиттер пропускает **полную** длину start-code (3 или 4 байта), иначе ловит
+  «вложенный» 3-байтный код в 4-байтном и плодит мусорные NAL'ы (decision №38).
+- Граница access unit — **перед** ведущими SEI/SPS/PPS (типы 6/7/8) или AUD(9)/VCL(1–5),
+  чтобы SPS+PPS+IDR ехали в одном сэмпле. Иначе браузер не декодирует keyframe (decision №38).
 
-## Компонент: pion-peer (`internal/rtc/peer.go`)
+## Компонент: pion-сессия (`internal/rtc/peer.go`)
 
-Жизненный цикл одной WebRTC-сессии:
 - `PeerConnection` (pion), без STUN/TURN — только host-кандидаты.
-- Один видеотрек `TrackLocalStaticSample`, кодек H.264. В `MediaEngine` объявляем
-  H.264-payload совместимо с браузерным `<video>` (baseline/constrained;
-  profile-level-id уточняется спайком).
-- `idb.Spawn` (сайдкар) → `Describe` (для `ScaleTap`) → `VideoStream`; горутина
-  качает кадры: `track.WriteSample(media.Sample{Data, Duration})`.
-- `OnDataChannel("control")`: входящие сообщения → `parseControl` → `ScaleTap`/`hid`
-  (тот же код, что в `/session`).
-- Teardown: на закрытие peer / `ctx.Done()` — стоп `VideoStream`, kill сайдкара.
-  Симметрично нынешнему `handleSession`.
+- Один видеотрек `TrackLocalStaticSample`, кодек H.264 (дефолтный MediaEngine,
+  baseline-совместимо).
+- `OnDataChannel("control")`: входящие сообщения → callback `onControl([]byte)`.
+- `Answer(offerSDP) (answerSDP, error)`: non-trickle (ждёт `GatheringCompletePromise`).
+- `WriteFrame(data, dur)`: пишет access unit в трек.
+- `OnClose(fn)` / `Close()`: teardown при failed/disconnected/closed.
 
-## Компонент: сигналинг (`internal/rtc/signal.go`, WS `/rtc?udid=X`)
+## Компонент: сигналинг + оркестрация (`internal/server/rtc.go`, WS `/rtc?udid=X`)
 
 ```
 браузер                          simcastd /rtc
   createOffer + setLocal  ──────►
-  (ждёт сбора ICE)
+  (ICE gathering complete)
   send offer SDP          ──────►  setRemote(offer)
-                                   spawn sidecar, video track, datachannel
-                                   createAnswer + setLocal
-                                   (ждёт сбора ICE — на localhost мгновенно)
+                                   spawn sidecar; Describe; ScreenshotStream → encoder.Encode
+                                   rtc.New(onControl) → Answer(offer)
                           ◄──────  send answer SDP
   setRemote(answer)
-  ── видео и DataChannel поднимаются по P2P ──
+  receiver.jitterBufferTarget=0
+  ── видео (encoder→WriteFrame) и DataChannel(control→applyControl) по P2P ──
 ```
-
-Один заход offer→answer, ICE внутри SDP (non-trickle). После обмена WS простаивает/
-закрывается — медиа и control идут по P2P. `server.go` регистрирует `/rtc` одной
-строкой `mux.HandleFunc`, как `/session`.
+`server.go` регистрирует `/rtc` одной строкой. При старте/коннекте проверяется
+`encoder.Available()`; если ffmpeg нет — внятная ошибка клиенту (предложить `brew install ffmpeg`).
 
 ## Компонент: браузерный клиент (`web/debug/index.html`)
 
-Два режима с переключателем (две кнопки **RTC** / **JPG**):
-- Дефолт — **RTC** (витрина фазы); **JPG** — fallback в один клик.
-- Переключение рвёт активное соединение текущего режима и поднимает другое. Выбор
-  симулятора / boot — общий для обоих.
-- **RTC:** `RTCPeerConnection`, `<video autoplay playsinline>`,
-  `createDataChannel("control")`, обмен SDP по WS `/rtc`. Тачи/свайпы/Home/клавиатура
-  шлются **тем же JSON** (`{"type":"tap",...}` и т.д.), что в JPG-режиме, но через
-  `dataChannel.send()`. JS-обработчики ввода переиспользуются — меняется только труба.
-- **JPG:** без изменений (Phase 1).
-- Координаты — нормализованный `[0,1]` (решения №20/24); `<video>` отдаёт размеры
-  как `<img>`.
+Две кнопки **RTC** / **JPG** (дефолт RTC):
+- **RTC:** `RTCPeerConnection`, `<video autoplay playsinline muted>`,
+  `createDataChannel("control")`, обмен SDP по WS `/rtc`. После `ontrack` —
+  `receiver.jitterBufferTarget=0` и `playoutDelayHint=0` (Chrome, в try/catch). Тачи/свайпы/
+  Home/клавиатура — тем же JSON, что в JPG-режиме, но через `dataChannel.send()`.
+- **JPG:** без изменений (Phase 1, PNG-кадры по WS в `<img>`).
+- Координаты — нормализованный `[0,1]` (решения №20/24); `<video>` отдаёт размеры как `<img>`.
 
 ## Обработка ошибок / teardown
 
-- ICE завис / peer `failed`|`disconnected` → клиент показывает ошибку, можно
-  переключиться на JPG. Сервер по закрытию peer убивает сайдкар.
-- Сайдкар не стартовал / `Describe` упал → ошибка по WS `/rtc` до обмена answer
-  (как сейчас в `/session`).
-- `VideoStream` оборвался → закрываем peer, сессия рвётся (симметрично Phase 1
-  «stream ended → teardown»).
-- Один сайдкар на сессию. Параллельные RTC + JPG к одному udid в MVP не
-  поддерживаем (последний выигрывает) — упрощение, не предмет фазы.
+- `ffmpeg` недоступен → `encoder.Available()` ошибка по WS `/rtc` до answer (совет про brew).
+- ICE завис / peer failed|disconnected → клиент показывает ошибку, можно переключиться на JPG;
+  сервер по закрытию peer убивает сайдкар и ffmpeg.
+- ScreenshotStream/encoder оборвались → закрываем peer, сессия рвётся.
+- Сайдкар не стартовал / `Describe` упал → ошибка по WS `/rtc` до answer.
+- Один сайдкар + один ffmpeg на сессию.
 
 ## Тестирование
 
-- **Юнит:** H.264-сплиттер на access unit'ы (фиксированный байтовый вектор →
-  ожидаемые границы NAL) в `internal/idb`. Путь DataChannel→control покрыт
-  существующими тестами `parseControl`/`keymap`/`ScaleTap`.
-- **`internal/rtc`:** тест сборки SDP-ответа / регистрации трека настолько, насколько
-  pion даёт юнит-тестить без реального peer (минимально).
-- **Спайк-критерий** (шаг 0) — отдельная веха: видно непрерывное движущееся видео.
-- **Ручной E2E (DoD):** браузер, RTC-режим — низколатентное живое видео + тап/свайп/
-  Home/клавиши по DataChannel; JPG-режим работает как раньше.
+- **Юнит:** Annex-B NAL-сплиттер (вкл. 4-байтный start-code) и сборка access unit'ов
+  (вкл. группировку SPS/PPS/SEI с IDR) в `internal/encoder` — фиксированные байтовые
+  векторы. Путь DataChannel→control покрыт существующими тестами `parseControl`/`keymap`/`ScaleTap`.
+- **`internal/encoder`:** тест построения ffmpeg argv; `Available()` (skip, если ffmpeg нет).
+- **`internal/rtc`:** тест сборки SDP-ответа (реальный offer от тестового pion-peer → `m=video`).
+- **`/rtc`:** быстрый тест 400 при отсутствии `?udid=`.
+- **Ручной E2E (DoD):** браузер, RTC — низколатентное (суб-секунда) живое видео без
+  артефактов на смене сцены + тач/свайп/Home/клавиши по DataChannel; JPG-режим работает.
 
-## Порядок реализации
+## Порядок реализации (см. план)
 
-1. **Шаг 0 — спайк.** Снять риск H.264. Пока не пройдёт — дальше не идём.
-2. H.264-ингест (`internal/idb.VideoStream`) — дочистка ядра из спайка.
-3. `internal/rtc` — pion-peer + `/rtc` сигналинг (дубовый сигналинг из спайка
-   выбрасывается).
-4. DataChannel → control (переиспользуем `parseControl`/`ScaleTap`/`hid`).
-5. Браузер: переключатель RTC/JPG, `<video>`, DataChannel.
+1. Annex-B NAL-сплиттер (`internal/encoder/nal.go`) — TDD, фиксы из спайка.
+2. Сборка access unit'ов (`auAssembler` + `startsNewAU`) — TDD, фиксы из спайка.
+3. ffmpeg-энкодер (`internal/encoder/ffmpeg.go` + `Available`) — обвязка подпроцесса.
+4. Вынести `applyControl` (переиспользование ввода).
+5. `internal/rtc.Session` (pion peer).
+6. WS `/rtc` + оркестрация (screenshot→encoder→pion) в `server`.
+7. Браузер: переключатель RTC/JPG, `<video>`, DataChannel, jitterBufferTarget=0.
+8. Ручной E2E (DoD).
+9. Тюнинг латентности (цель — суб-300мс: fps↑, `-vf scale`↓, пейсинг) — best-effort.
+10. Уборка спайка + README (зависимость ffmpeg).
 
 ## Сознательно вне скоупа Phase 2
 
 - Нативный iPad-клиент (Phase 3).
 - STUN/TURN, NAT-traversal, защищённый сигналинг (Phase 4).
-- Адаптивный битрейт, своя видео-пайплайн (отложено в ARCHITECTURE.md).
-- Параллельные RTC+JPG к одному udid.
-- Trickle ICE, реконнект (понадобятся позже; non-trickle достаточно для localhost).
+- VP9/AV1 screen-content кодеки (выгода на узком канале — Phase 4).
+- Собственный capture-пайплайн (ScreenCaptureKit) — отложено (idb захватывает, мы только
+  перекодируем его вывод).
+- Адаптивный битрейт.
+- Параллельные RTC+JPG к одному udid; trickle ICE; реконнект.

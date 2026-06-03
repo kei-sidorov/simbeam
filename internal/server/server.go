@@ -37,6 +37,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/simulators", s.handleSimulators)
 	mux.HandleFunc("/api/boot", s.handleBoot)
 	mux.HandleFunc("/session", s.handleSession)
+	mux.HandleFunc("/rtc", s.handleRTC)
 	if s.webDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.webDir)))
 	}

@@ -1,0 +1,58 @@
+package rtc
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/pion/webrtc/v4"
+)
+
+func makeOffer(t *testing.T) string {
+	t.Helper()
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
+		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pc.CreateDataChannel("control", nil); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	return pc.LocalDescription().SDP
+}
+
+func TestSessionAnswer(t *testing.T) {
+	sess, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	answerSDP, err := sess.Answer(makeOffer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answerSDP, "m=video") {
+		t.Fatalf("answer missing video media section:\n%s", answerSDP)
+	}
+}
+
+func TestSessionWriteFrameNoPanic(t *testing.T) {
+	sess, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	_ = sess.WriteFrame([]byte{0, 0, 0, 1, 0x65, 0x00}, 66)
+}

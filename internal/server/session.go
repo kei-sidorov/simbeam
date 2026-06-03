@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"time"
 
@@ -89,31 +88,6 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue // ignore malformed/unknown
 		}
-		switch m.Type {
-		case "tap":
-			if err := client.Tap(ctx, idb.ScaleTap(m.X, m.Y, screen)); err != nil {
-				log.Printf("tap: %v", err)
-			}
-		case "home":
-			if err := client.Home(ctx); err != nil {
-				log.Printf("home: %v", err)
-			}
-		case "swipe":
-			dur := m.Duration
-			if dur <= 0 {
-				dur = 0.3
-			}
-			start := idb.ScaleTap(m.X1, m.Y1, screen)
-			end := idb.ScaleTap(m.X2, m.Y2, screen)
-			if err := client.Swipe(ctx, start, end, dur); err != nil {
-				log.Printf("swipe: %v", err)
-			}
-		case "key":
-			if usage, shift, ok := keyUsage(m.Key); ok {
-				if err := client.KeyPress(ctx, usage, shift); err != nil {
-					log.Printf("key: %v", err)
-				}
-			}
-		}
+		applyControl(ctx, client, screen, m)
 	}
 }
