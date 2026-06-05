@@ -40,7 +40,7 @@ func (s *Server) startSession(ctx context.Context, iceServers []webrtc.ICEServer
 // WebSocket (dev mode): a pre-negotiated silent H.264 track plus a control
 // DataChannel. No simulator is bound up front — the client drives
 // list/boot/attach/detach over the control channel. The JPEG /session path is
-// untouched. Remote rendezvous uses DialSignal (remote.go) instead.
+// untouched. Remote rendezvous uses serveOnce/ServeSignal (remote.go) instead.
 func (s *Server) handleRTC(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
