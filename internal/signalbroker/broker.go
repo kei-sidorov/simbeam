@@ -87,10 +87,8 @@ func New(cfg Config) *Broker {
 func (b *Broker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", b.handleWS)
-	// DEVIATION (orchestrator-approved): the /v1/subscription and
-	// /v1/subscription/me routes + their handlers are added in Task 10
-	// (subscription.go). They are intentionally NOT registered here so this
-	// package compiles and Task 9's tests run green on their own.
+	mux.HandleFunc("/v1/subscription", b.handleSubscription)
+	mux.HandleFunc("/v1/subscription/me", b.handleSubscriptionMe)
 	return mux
 }
 
