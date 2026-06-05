@@ -215,6 +215,28 @@ go run ./cmd/simcastd serve --addr :8080 --web ./web/debug \
 renegotiation нет (видео-трек pre-negotiated, решение #50). Реальный NAT/relay
 локально не проверить — см. `deploy/README.md` и «deploy-only» сценарии.
 
+## Remote pairing (Phase 3C)
+
+Run the broker and the daemon, then pair a browser once and reconnect without QR:
+
+```bash
+# 1. Broker + subscription store (app secret must match the bench's dev value)
+SIMCAST_APP_SECRET=dev-app-secret go run ./cmd/simcast-signal \
+  --addr :9000 --db /tmp/simcast.db \
+  --turn turn:relay.example:3478 --turn-secret secret   # TURN optional
+
+# 2. Daemon: persistent identity + serve, debug client at :8080
+go run ./cmd/simcastd serve --web web/debug --addr :8080 --signal ws://localhost:9000/ws
+```
+
+Press **P** in the daemon terminal to open a one-time pairing window; open the
+printed URL and click **Pair this Mac**. The browser saves the Mac and reconnects
+automatically afterwards (no QR). Revoke a device with
+`simcastd unpair <clientPubKey>`. Inspect subscriptions by opening `/tmp/simcast.db`
+in `sqlite3` / DB Browser.
+
+Identity files live in `~/.simcast/` (`identity.key`, `clients.json`, both 0600).
+
 ## С чего начать (Bootstrap)
 
 Открой папку агентом и попроси выполнить **Phase 0 (Bootstrap)** — см. `CLAUDE.md` и `docs/ROADMAP.md`.
