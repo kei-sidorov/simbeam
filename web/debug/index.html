@@ -143,9 +143,53 @@ function renderMacs() {
   });
 }
 
-// ---- TEMPORARY stubs (replaced in Task 18). Present so the file stays runnable. ----
-function setupSubscriptionPanel() {} // TODO Task 18 replaces this
-function refreshTurnIndicator(_iceServers) {} // TODO Task 18 replaces this
+// ---- 3C: subscription emulation + TURN indicator ----
+// The broker base URL is derived from the pairing/saved signal WS URL
+// (ws://host:9000/ws → http://host:9000).
+function brokerHTTPBase() {
+  const s = (currentSession && currentSession.signal) || (pairing() && pairing().signal);
+  if (!s) return null;
+  return s.replace(/^ws/, 'http').replace(/\/ws$/, '');
+}
+
+function setupSubscriptionPanel() {
+  document.getElementById('subApply').onclick = applySubscription;
+}
+
+// applySubscription sends a REAL signed POST /v1/subscription (replaces StoreKit):
+// X-App-Sig = HMAC-SHA256(APP_SECRET, canonical); X-Account-Sig = Ed25519(client).
+async function applySubscription() {
+  const base = brokerHTTPBase();
+  if (!base) { alert('Pair or select a Mac first (need the broker URL).'); return; }
+  const product = document.getElementById('subProduct').value;
+  const dateVal = document.getElementById('subExpires').value; // yyyy-mm-dd
+  if (!dateVal) { alert('pick an expiry date'); return; }
+  const expires = new Date(dateVal + 'T00:00:00Z').toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const issued = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+  const canon = canonicalSub(clientPub, product, expires, issued);
+  const appSig = await hmacSha256B64(APP_SECRET, canon);
+  const accSig = await signEd25519(canon);
+
+  const resp = await fetch(base + '/v1/subscription', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-App-Sig': appSig, 'X-Account-Sig': accSig},
+    body: JSON.stringify({client_pubkey: clientPub, product_id: product, expires_at: expires, issued_at: issued}),
+  });
+  const status = document.getElementById('subStatus');
+  status.textContent = resp.ok ? ` ✓ applied (expires ${expires})` : ` ✗ ${resp.status} ${await resp.text()}`;
+}
+
+// refreshTurnIndicator shows whether the issued iceServers include a TURN relay,
+// making the subscription gate visible to the eye.
+function refreshTurnIndicator(iceServers) {
+  const hasTurn = (iceServers || []).some(s => {
+    const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+    return urls.some(u => String(u).startsWith('turn:'));
+  });
+  document.getElementById('turnIndicator').textContent =
+    'iceServers contain TURN: ' + (hasTurn ? 'YES (subscriber)' : 'no (STUN only)');
+}
 
 // setupPairButton shows the "Pair this Mac" button iff the URL fragment carries
 // a pair secret. Clicking it runs the first-pairing enrollment handshake.
