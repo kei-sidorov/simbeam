@@ -19,6 +19,23 @@
     <button id="modeRtc" class="active">RTC</button>
     <button id="modeJpg">JPG</button>
   </div>
+  <div id="identity" style="margin:8px 0; padding:8px; border:1px solid #eee; font-size:13px;">
+    <b>Account key:</b> <code id="pubkey">…</code>
+    <button id="resetIdentity" title="new account for testing">reset</button>
+  </div>
+  <div id="macs" style="margin:8px 0;">
+    <b>My Macs:</b>
+    <div id="macList">none yet</div>
+    <button id="pairBtn" style="display:none;">Pair this Mac</button>
+  </div>
+  <div id="subPanel" style="margin:8px 0; padding:8px; border:1px solid #eee; font-size:13px;">
+    <b>Subscription (StoreKit emulation):</b>
+    <input id="subProduct" value="pro.monthly" size="12">
+    expires <input id="subExpires" type="date">
+    <button id="subApply">Apply</button>
+    <span id="subStatus"></span>
+  </div>
+  <div id="turnIndicator" style="margin:8px 0; font-size:13px;"></div>
   <h3>Simulators</h3>
   <div id="sims">loading…</div>
   <img id="screenImg" class="surface" alt="simulator">
@@ -40,6 +57,96 @@ let currentUDID = null;
 let ws = null;                          // jpg path
 let pc = null, dc = null, sig = null;   // rtc path
 let startGen = 0;
+
+// ---- 3C: account identity (WebCrypto Ed25519, persisted in localStorage) ----
+const APP_SECRET = 'dev-app-secret'; // must equal the broker's SIMCAST_APP_SECRET in local dev
+let clientPriv = null;               // CryptoKey (Ed25519 private, usage ['sign'])
+let clientPub = null;                // base64 (std) raw public key = account id
+
+function bytesToB64(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s); }
+
+async function loadOrCreateIdentity() {
+  const stored = localStorage.getItem('simcast_priv_pkcs8');
+  const storedPub = localStorage.getItem('simcast_pub');
+  if (stored && storedPub) {
+    clientPriv = await crypto.subtle.importKey('pkcs8', b64ToBytes(stored), {name: 'Ed25519'}, true, ['sign']);
+    clientPub = storedPub;
+    return;
+  }
+  const kp = await crypto.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']);
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
+  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+  clientPriv = kp.privateKey;
+  clientPub = bytesToB64(raw);
+  localStorage.setItem('simcast_priv_pkcs8', bytesToB64(pkcs8));
+  localStorage.setItem('simcast_pub', clientPub);
+}
+
+async function signEd25519(bytes) {
+  const sig = await crypto.subtle.sign('Ed25519', clientPriv, bytes);
+  return bytesToB64(new Uint8Array(sig));
+}
+
+async function hmacSha256B64(secret, bytes) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, bytes);
+  return bytesToB64(new Uint8Array(sig));
+}
+
+// EnrollProof = base64(HMAC-SHA256(S, clientPubKey ‖ 0x00 ‖ nonce)). Bytes must
+// match the Go server byte-for-byte.
+async function enrollProof(secret, pub, nonce) {
+  const enc = new TextEncoder();
+  const a = enc.encode(pub), b = enc.encode(nonce);
+  const buf = new Uint8Array(a.length + 1 + b.length);
+  buf.set(a, 0); buf[a.length] = 0; buf.set(b, a.length + 1);
+  return hmacSha256B64(secret, buf);
+}
+
+// Canonical subscription bytes: pub ‖ 0x1f ‖ product ‖ 0x1f ‖ expires ‖ 0x1f ‖ issued.
+function canonicalSub(pub, product, expires, issued) {
+  return new TextEncoder().encode([pub, product, expires, issued].join('\x1f'));
+}
+
+function renderIdentity() {
+  document.getElementById('pubkey').textContent = clientPub ? clientPub.slice(0, 16) + '…' : '…';
+}
+
+document.getElementById('resetIdentity').onclick = async () => {
+  localStorage.removeItem('simcast_priv_pkcs8');
+  localStorage.removeItem('simcast_pub');
+  await loadOrCreateIdentity();
+  renderIdentity();
+  alert('New account key generated. You must re-pair your Macs.');
+};
+
+// ---- 3C: my Macs (saved pinned daemons) ----
+function loadMacs() {
+  try { return JSON.parse(localStorage.getItem('simcast_macs') || '[]'); } catch (e) { return []; }
+}
+function saveMac(mac) {
+  const macs = loadMacs().filter(m => m.daemon !== mac.daemon);
+  macs.push(mac);
+  localStorage.setItem('simcast_macs', JSON.stringify(macs));
+  renderMacs();
+}
+function renderMacs() {
+  const macs = loadMacs();
+  const el = document.getElementById('macList');
+  el.innerHTML = '';
+  if (!macs.length) { el.textContent = 'none yet'; return; }
+  macs.forEach(m => {
+    const b = document.createElement('button');
+    b.textContent = `${m.name || 'Mac'} (${m.daemon.slice(0, 8)}…)`;
+    b.onclick = () => connectRemote(m); // defined in Task 17
+    el.appendChild(b);
+  });
+}
+
+// ---- TEMPORARY stubs (replaced in Tasks 17/18). Present so init() doesn't throw. ----
+function setupPairButton() {}        // TODO Task 17 replaces this
+function setupSubscriptionPanel() {} // TODO Task 18 replaces this
+function connectRemote(_mac) {}      // TODO Task 17 replaces this
 
 function surface() { return mode === 'rtc' ? vidEl : imgEl; }
 
@@ -375,7 +482,14 @@ window.addEventListener('keydown', (e) => {
 
 homeBtn.onclick = () => sendControl({type: 'home'});
 
-enterMode();
+(async function init() {
+  await loadOrCreateIdentity();
+  renderIdentity();
+  renderMacs();
+  setupPairButton();          // defined in Task 17
+  setupSubscriptionPanel();   // defined in Task 18
+  if (mode === 'jpg') loadSimsREST();
+})();
 </script>
 </body>
 </html>
