@@ -15,10 +15,7 @@ import (
 	"github.com/kei-sidorov/simcast/internal/companion"
 	"github.com/kei-sidorov/simcast/internal/signal"
 	"github.com/kei-sidorov/simcast/internal/signalbroker"
-
-	// store is used by the reconnect + TURN-gate test (Task 15) that shares
-	// these helpers; kept here so the shared fixture file declares the dep.
-	_ "github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simcast/internal/store"
 )
 
 // brokerFixture starts a real broker (optionally with a Store + TURN) on httptest
@@ -221,5 +218,115 @@ func TestEnrollmentEndToEnd(t *testing.T) {
 
 	if !pinned.Contains(clientPub) {
 		t.Fatalf("client was not pinned after enrollment")
+	}
+}
+
+// TestReconnectByDaemonID: a pre-pinned client connects with NO secret (key-only
+// challenge), reaches the control plane, then reconnects a second time on the
+// same daemon — proving the reconnect path needs no QR/secret.
+func TestReconnectByDaemonID(t *testing.T) {
+	wsURL := brokerFixture(t, signalbroker.Config{STUNURLs: []string{"stun:stun.l.google.com:19302"}})
+
+	pub, priv, _ := signal.GenerateKeyPair()
+	id := Identity{PubB64: pub, Priv: priv}
+
+	clientPub, clientPriv, _ := signal.GenerateKeyPair()
+	pinned, _ := LoadPinnedStore(t.TempDir() + "/clients.json")
+	_ = pinned.Add(clientPub, "iPad") // already enrolled
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	startDaemon(t, ctx, wsURL, id, pinned, NewPairingWindow()) // window CLOSED
+
+	for i := 0; i < 2; i++ {
+		pc, replies := newOfferer(t)
+		ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
+		runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
+		expectSims(t, replies, pc)
+		_ = ws.Close()
+		_ = pc.Close()
+		time.Sleep(100 * time.Millisecond) // let the daemon release the prior session
+	}
+}
+
+// TestUnpinnedClientRejected: with the window closed, a client the daemon has not
+// pinned is refused (peer-pinning: the daemon decides access, not the broker).
+func TestUnpinnedClientRejected(t *testing.T) {
+	wsURL := brokerFixture(t, signalbroker.Config{STUNURLs: []string{"stun:x"}})
+	pub, priv, _ := signal.GenerateKeyPair()
+	id := Identity{PubB64: pub, Priv: priv}
+	pinned, _ := LoadPinnedStore(t.TempDir() + "/clients.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	startDaemon(t, ctx, wsURL, id, pinned, NewPairingWindow())
+
+	stranger, strangerPriv, _ := signal.GenerateKeyPair()
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, stranger, strangerPriv, "")
+	t.Cleanup(func() { _ = ws.Close() })
+
+	// The daemon must answer the challenge with an error ("not paired"). Sign the
+	// (empty) challenge if one came, then expect an error.
+	if first.Type == signal.TypeChallenge {
+		t.Fatalf("unpinned client should NOT receive a challenge")
+	}
+	if first.Type != signal.TypeError || !strings.Contains(first.Msg, "not paired") {
+		t.Fatalf("want 'not paired' error, got %+v", first)
+	}
+}
+
+// TestTurnGateBySubscription: an active subscription for the client's key yields
+// STUN+TURN; no subscription yields STUN only. The client key the broker gates on
+// is the one authenticated by the challenge-response.
+func TestTurnGateBySubscription(t *testing.T) {
+	st, err := store.OpenSQLite(t.TempDir() + "/subs.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	wsURL := brokerFixture(t, signalbroker.Config{
+		STUNURLs:   []string{"stun:stun.l.google.com:19302"},
+		TURNURLs:   []string{"turn:relay.example:3478"},
+		TURNSecret: "secret",
+		Store:      st,
+	})
+
+	pub, priv, _ := signal.GenerateKeyPair()
+	id := Identity{PubB64: pub, Priv: priv}
+	pinned, _ := LoadPinnedStore(t.TempDir() + "/clients.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	startDaemon(t, ctx, wsURL, id, pinned, NewPairingWindow())
+
+	connect := func(clientPub string, clientPriv ed25519.PrivateKey) []signal.ICEServer {
+		_ = pinned.Add(clientPub, "")
+		pc, replies := newOfferer(t)
+		ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
+		ice := runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
+		expectSims(t, replies, pc)
+		_ = ws.Close()
+		_ = pc.Close()
+		time.Sleep(100 * time.Millisecond)
+		return ice
+	}
+
+	// Subscribed client → STUN + TURN.
+	subPub, subPriv, _ := signal.GenerateKeyPair()
+	if err := st.Upsert(ctx, store.Subscription{
+		ClientPubKey: subPub, ProductID: "pro", ExpiresAt: "2099-01-01T00:00:00Z",
+		IssuedAt: "2026-06-04T00:00:00Z", Source: "client", UpdatedAt: "2026-06-04T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ice := connect(subPub, subPriv); len(ice) != 2 {
+		t.Fatalf("subscribed client want STUN+TURN, got %d iceServers", len(ice))
+	}
+
+	// Unsubscribed client → STUN only.
+	freePub, freePriv, _ := signal.GenerateKeyPair()
+	if ice := connect(freePub, freePriv); len(ice) != 1 {
+		t.Fatalf("free client want STUN only, got %d iceServers", len(ice))
 	}
 }
