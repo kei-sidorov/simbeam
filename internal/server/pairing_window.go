@@ -44,3 +44,11 @@ func (p *pairingWindow) verify(clientPubKey, nonce, proof string, now time.Time)
 	p.secret = ""
 	return true
 }
+
+// NewPairingWindow returns a closed pairing window the daemon arms on demand.
+func NewPairingWindow() *pairingWindow { return &pairingWindow{} }
+
+// Open arms the window (exported wrapper over open for cmd use).
+func (p *pairingWindow) Open(secret string, now time.Time, ttl time.Duration) {
+	p.open(secret, now, ttl)
+}
