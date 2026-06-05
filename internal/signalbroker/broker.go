@@ -1,45 +1,47 @@
-// Package signalbroker is the simcast signaling broker: a thin WSS rendezvous
-// that pairs a daemon and a browser sharing a one-time pairing token, relays a
-// single offer→answer between them, and hands each peer an iceServers config
-// (STUN always; TURN only when the subscription stub grants it). Media never
-// transits the broker — only the handshake does.
+// Package signalbroker is the simcast signaling broker: a thin WSS rendezvous.
+// A daemon registers persistently under its daemonID (its Ed25519 pubkey) and
+// stays present; a client is routed to it by daemonID. The broker relays a
+// mutual challenge-response (it authenticates only the client KEY, for the TURN
+// gate — connection access is decided by the endpoints themselves, peer-pinning,
+// broker untrusted), then relays one offer→answer. It hands each peer an
+// iceServers config (STUN always; TURN only when the client's subscription is
+// active in Store). Media never transits the broker. It also serves the
+// subscription HTTP API (subscription.go).
 package signalbroker
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+
 	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simcast/internal/store"
 )
 
-// Config tunes ICE issuance and subscription gating.
+// Config tunes ICE issuance, the subscription gate, and the subscription API.
 type Config struct {
-	STUNURLs   []string               // always handed out
-	TURNURLs   []string               // handed out only when GrantTURN(room) is true
-	TURNSecret string                 // coturn static-auth-secret (shared with coturn)
-	TURNTTL    time.Duration          // ephemeral credential lifetime; 0 → 1 minute
-	GrantTURN  func(room string) bool // subscription gate STUB (Phase 4 = real billing); nil → deny
-	Now        func() time.Time       // injectable clock; nil → time.Now
+	STUNURLs   []string      // always handed out
+	TURNURLs   []string      // handed out only when the client's subscription is active
+	TURNSecret string        // coturn static-auth-secret (shared with coturn)
+	TURNTTL    time.Duration // ephemeral credential lifetime; 0 → 1 minute
+	Store      store.Store   // subscription gate + /v1/subscription persistence; nil → no TURN, API 503
+	AppSecret  string        // SIMCAST_APP_SECRET: the weak app-sig barrier on the subscription API
+	Now        func() time.Time
 }
 
-// Broker holds the live rooms.
+// Broker holds live daemon presence.
 type Broker struct {
-	cfg   Config
-	up    websocket.Upgrader
-	mu    sync.Mutex
-	rooms map[string]*room
+	cfg     Config
+	up      websocket.Upgrader
+	mu      sync.Mutex
+	daemons map[string]*daemonConn // daemonID → registered daemon
 }
 
-// room holds the two sides of one pairing. A connection is wrapped so writes
-// are serialized (gorilla forbids concurrent writers on one conn).
-type room struct {
-	daemon *conn
-	client *conn
-}
-
-// conn serializes writes to one websocket.
+// conn serializes writes to one websocket (gorilla forbids concurrent writers).
 type conn struct {
 	ws  *websocket.Conn
 	wmu sync.Mutex
@@ -51,41 +53,63 @@ func (c *conn) send(m signal.Msg) error {
 	return c.ws.WriteJSON(m)
 }
 
+// daemonConn is a registered daemon plus its current (single) client session.
+type daemonConn struct {
+	c      *conn
+	id     string
+	mu     sync.Mutex
+	client *clientConn
+}
+
+// clientConn is the in-flight client for a daemon, with the broker's gate nonce.
+type clientConn struct {
+	c      *conn
+	pubKey string
+	bNonce string
+}
+
 // New builds a Broker with sane defaults for the optional Config fields.
 func New(cfg Config) *Broker {
 	if cfg.TURNTTL == 0 {
 		cfg.TURNTTL = time.Minute
 	}
-	if cfg.GrantTURN == nil {
-		cfg.GrantTURN = func(string) bool { return false }
-	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
 	return &Broker{
-		cfg:   cfg,
-		up:    websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
-		rooms: map[string]*room{},
+		cfg:     cfg,
+		up:      websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
+		daemons: map[string]*daemonConn{},
 	}
 }
 
-// Handler serves the broker at /ws.
+// Handler serves the broker WS at /ws and the subscription API at /v1/...
 func (b *Broker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", b.handleWS)
+	// DEVIATION (orchestrator-approved): the /v1/subscription and
+	// /v1/subscription/me routes + their handlers are added in Task 10
+	// (subscription.go). They are intentionally NOT registered here so this
+	// package compiles and Task 9's tests run green on their own.
 	return mux
 }
 
-// iceServers builds the config for a room: STUN always, TURN if granted.
-func (b *Broker) iceServers(roomID string) []signal.ICEServer {
+// iceServers builds the config for an authenticated client: STUN always, TURN
+// only when the client's subscription is active in Store. The TURN credential
+// userID is the verified client pubkey (decouples it from any room/token).
+func (b *Broker) iceServers(clientPubKey string) []signal.ICEServer {
 	out := []signal.ICEServer{{URLs: b.cfg.STUNURLs}}
-	if b.cfg.GrantTURN(roomID) && len(b.cfg.TURNURLs) > 0 {
-		cred := signal.MakeTURNCredential(b.cfg.TURNSecret, roomID, b.cfg.Now(), b.cfg.TURNTTL)
-		out = append(out, signal.ICEServer{
-			URLs:       b.cfg.TURNURLs,
-			Username:   cred.Username,
-			Credential: cred.Credential,
-		})
+	granted := false
+	if b.cfg.Store != nil && len(b.cfg.TURNURLs) > 0 {
+		ok, err := b.cfg.Store.Active(context.Background(), clientPubKey, b.cfg.Now())
+		if err != nil {
+			log.Printf("signalbroker: subscription gate lookup failed: %v", err)
+		}
+		granted = err == nil && ok
+	}
+	if granted {
+		cred := signal.MakeTURNCredential(b.cfg.TURNSecret, clientPubKey, b.cfg.Now(), b.cfg.TURNTTL)
+		out = append(out, signal.ICEServer{URLs: b.cfg.TURNURLs, Username: cred.Username, Credential: cred.Credential})
 	}
 	return out
 }
@@ -98,8 +122,6 @@ func (b *Broker) handleWS(w http.ResponseWriter, r *http.Request) {
 	c := &conn{ws: ws}
 	defer ws.Close()
 
-	// First message must be register (daemon) or join (client); it binds this
-	// connection to a room.
 	var first signal.Msg
 	if err := ws.ReadJSON(&first); err != nil {
 		return
@@ -114,114 +136,128 @@ func (b *Broker) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveDaemon claims a room and relays the client's offer to the daemon until
-// the connection drops.
+// serveDaemon keeps a daemon present under its daemonID and relays daemon→client
+// messages (challenge/answer/error) to whichever client is currently in flight.
 func (b *Broker) serveDaemon(c *conn, reg signal.Msg) {
-	b.mu.Lock()
-	rm := b.rooms[reg.Room]
-	if rm == nil {
-		rm = &room{}
-		b.rooms[reg.Room] = rm
+	id := reg.Daemon
+	if id == "" {
+		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "register missing daemon id"})
+		return
 	}
-	// One-shot pairing: a duplicate register for the same token simply
-	// overwrites the slot. dropRoom uses connection identity, so the stale
-	// connection's deferred cleanup will not clobber this one.
-	rm.daemon = c
+	d := &daemonConn{c: c, id: id}
+	b.mu.Lock()
+	b.daemons[id] = d // a re-register (after reconnect) overwrites the stale slot
 	b.mu.Unlock()
 
-	defer b.dropRoom(reg.Room, c)
+	defer func() {
+		b.mu.Lock()
+		if b.daemons[id] == d {
+			delete(b.daemons, id)
+		}
+		b.mu.Unlock()
+		d.mu.Lock()
+		cl := d.client
+		d.mu.Unlock()
+		if cl != nil {
+			_ = cl.c.send(signal.Msg{Type: signal.TypePeerLeft})
+		}
+	}()
 
 	for {
 		var m signal.Msg
-		if err := c.ws.ReadJSON(&m); err != nil {
+		if err := d.c.ws.ReadJSON(&m); err != nil {
 			return
 		}
-		// Daemon → client: the signed answer (and nothing else needs relaying).
-		if m.Type == signal.TypeAnswer {
-			b.relay(reg.Room, signal.RoleDaemon, m)
+		d.mu.Lock()
+		cl := d.client
+		d.mu.Unlock()
+		if cl == nil {
+			continue
+		}
+		switch m.Type {
+		case signal.TypeChallenge:
+			// Attach the broker's own gate nonce before forwarding to the client.
+			_ = cl.c.send(signal.Msg{Type: signal.TypeChallenge, Nonce: m.Nonce, BrokerNonce: cl.bNonce})
+		case signal.TypeAnswer, signal.TypeError, signal.TypePeerLeft:
+			_ = cl.c.send(m)
 		}
 	}
 }
 
-// serveClient enters a room that a daemon must already hold, receives iceServers,
-// and relays its offer to the daemon.
+// serveClient routes a client to its daemon and relays the handshake.
 func (b *Broker) serveClient(c *conn, join signal.Msg) {
-	b.mu.Lock()
-	rm := b.rooms[join.Room]
-	if rm == nil || rm.daemon == nil {
-		b.mu.Unlock()
-		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "no daemon for this token — rescan/repair"})
+	if join.Daemon == "" || join.PubKey == "" {
+		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "join missing daemon or pubkey"})
 		return
 	}
-	// One-shot pairing: a second client on the same token overwrites the slot
-	// (no "room full" rejection by design).
-	rm.client = c
-	b.mu.Unlock()
-
-	defer b.dropRoom(join.Room, c)
-
-	// Hand both peers their ICE configuration (subscription-gated TURN). The
-	// daemon needs matching servers to gather srflx/relay candidates too.
-	ice := b.iceServers(join.Room)
-	_ = c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
 	b.mu.Lock()
-	dmn := rm.daemon
+	d := b.daemons[join.Daemon]
 	b.mu.Unlock()
-	if dmn != nil {
-		_ = dmn.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
+	if d == nil {
+		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "device offline — wake your Mac"})
+		return
 	}
+
+	bNonce, err := signal.NewNonce()
+	if err != nil {
+		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "broker nonce error"})
+		return
+	}
+	cl := &clientConn{c: c, pubKey: join.PubKey, bNonce: bNonce}
+	d.mu.Lock()
+	old := d.client
+	d.client = cl // one client at a time; a new client replaces the previous
+	d.mu.Unlock()
+	if old != nil {
+		// Stop the displaced client's goroutine so it can't write its
+		// proof/offer into this new client's session on the shared daemon conn.
+		_ = old.c.ws.Close()
+	}
+
+	defer func() {
+		d.mu.Lock()
+		mine := d.client == cl
+		if mine {
+			d.client = nil
+		}
+		d.mu.Unlock()
+		// Only the CURRENT client tells the daemon its peer left; a displaced
+		// client must not tear down the live session.
+		if mine {
+			_ = d.c.send(signal.Msg{Type: signal.TypePeerLeft})
+		}
+	}()
+
+	// Ask the daemon to start the challenge (carry enrollment proof if present).
+	_ = d.c.send(signal.Msg{Type: signal.TypeConnect, PubKey: join.PubKey, Nonce: join.Nonce, Pair: join.Pair})
 
 	for {
 		var m signal.Msg
 		if err := c.ws.ReadJSON(&m); err != nil {
 			return
 		}
-		if m.Type == signal.TypeOffer {
-			b.relay(join.Room, signal.RoleClient, m)
+		d.mu.Lock()
+		mine := d.client == cl
+		d.mu.Unlock()
+		if !mine {
+			return // displaced by a newer client; stop relaying
 		}
-	}
-}
-
-// relay forwards m to the *other* side of the room.
-func (b *Broker) relay(roomID, from string, m signal.Msg) {
-	b.mu.Lock()
-	rm := b.rooms[roomID]
-	var dst *conn
-	if rm != nil {
-		if from == signal.RoleClient {
-			dst = rm.daemon
-		} else {
-			dst = rm.client
+		switch m.Type {
+		case signal.TypeProof:
+			// Verify the broker-gate signature over bNonce: authenticates the
+			// client KEY so the TURN gate can trust the subscription lookup.
+			if !signal.Verify(cl.pubKey, []byte(cl.bNonce), m.BrokerSig) {
+				_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "broker challenge failed"})
+				return
+			}
+			ice := b.iceServers(cl.pubKey)
+			_ = c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
+			_ = d.c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
+			// Relay the peer proof to the daemon (brokerSig stripped — the daemon
+			// only cares about Sig over its own nonce + its pinned set).
+			_ = d.c.send(signal.Msg{Type: signal.TypeProof, Sig: m.Sig})
+		case signal.TypeOffer:
+			_ = d.c.send(m)
 		}
-	}
-	b.mu.Unlock()
-	if dst != nil {
-		_ = dst.send(m)
-	}
-}
-
-// dropRoom removes c from its room and notifies the peer it left. The room is
-// deleted once empty.
-func (b *Broker) dropRoom(roomID string, c *conn) {
-	b.mu.Lock()
-	rm := b.rooms[roomID]
-	if rm == nil {
-		b.mu.Unlock()
-		return
-	}
-	var peer *conn
-	if rm.daemon == c {
-		rm.daemon = nil
-		peer = rm.client
-	} else if rm.client == c {
-		rm.client = nil
-		peer = rm.daemon
-	}
-	if rm.daemon == nil && rm.client == nil {
-		delete(b.rooms, roomID)
-	}
-	b.mu.Unlock()
-	if peer != nil {
-		_ = peer.send(signal.Msg{Type: signal.TypePeerLeft})
 	}
 }
