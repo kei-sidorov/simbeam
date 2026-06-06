@@ -9,17 +9,20 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/kei-sidorov/simcast/internal/companion"
 	"github.com/kei-sidorov/simcast/internal/server"
 	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/mdp/qrterminal/v3"
 	"golang.org/x/term"
 )
 
@@ -154,12 +157,44 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 			return
 		}
 		win.Open(secret, time.Now(), pairTTL)
-		fmt.Printf("\r\nPair this device by opening (window open %s):\r\n  %s\r\n",
-			pairTTL, signal.PairingURL(base, signalURL, id.PubB64, secret))
+		pairURL := signal.PairingURL(base, signalURL, id.PubB64, secret)
+		fmt.Printf("\r\nPair this device (window open %s) — scan with the iPad camera,\r\nor open the URL below:\r\n\r\n", pairTTL)
+		printPairingQR(os.Stdout, pairURL)
+		fmt.Printf("\r\n  %s\r\n", pairURL)
 	}
 
 	go watchKeys(ctx, cancel, onPair)
 	return srv.ServeSignal(ctx, signalURL, id, pinned, win)
+}
+
+// printPairingQR renders the pairing URL as a compact QR code in the terminal so
+// the iPad camera can pick it up directly (Expo-style), avoiding a copy-paste of
+// the long enrollment fragment. Half-blocks keep it small and level L keeps the
+// module count low (the URL is ~200 chars); the secret is one-time and the window
+// short-lived, so low error correction is fine. The caller may have put the TTY
+// in raw mode, so newlines are rewritten to CRLF to avoid a staircase.
+func printPairingQR(w io.Writer, url string) {
+	qrterminal.GenerateWithConfig(url, qrterminal.Config{
+		Level:          qrterminal.L,
+		Writer:         &crlfWriter{w: w},
+		HalfBlocks:     true,
+		BlackChar:      qrterminal.BLACK_BLACK,
+		WhiteChar:      qrterminal.WHITE_WHITE,
+		BlackWhiteChar: qrterminal.BLACK_WHITE,
+		WhiteBlackChar: qrterminal.WHITE_BLACK,
+		QuietZone:      1,
+	})
+}
+
+// crlfWriter rewrites bare "\n" to "\r\n" so terminal output lines up under a TTY
+// in raw mode (where "\n" moves down but not to column 0).
+type crlfWriter struct{ w io.Writer }
+
+func (c *crlfWriter) Write(p []byte) (int, error) {
+	if _, err := c.w.Write([]byte(strings.ReplaceAll(string(p), "\n", "\r\n"))); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // watchKeys reads single keystrokes from a terminal: P opens a pairing window,
