@@ -1,0 +1,6 @@
+# Reverse-proxy the signalling broker behind automatic HTTPS (Let's Encrypt).
+# Replace signal.example.com with your domain. Pairing URLs use wss://<domain>/ws.
+# Caddy upgrades WebSocket connections transparently.
+signal.example.com {
+	reverse_proxy 127.0.0.1:9000
+}
