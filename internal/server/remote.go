@@ -4,10 +4,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"log"
+	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 
+	"github.com/kei-sidorov/simcast/internal/rtc"
 	"github.com/kei-sidorov/simcast/internal/signal"
 )
 
@@ -26,77 +30,159 @@ func toWebRTC(in []signal.ICEServer) []webrtc.ICEServer {
 }
 
 // signedAnswer wraps an answer SDP into a signaling Msg whose Sig authenticates
-// the SDP under the daemon's session key (anti-MITM: the browser verifies it
-// against the pubkey carried in the pairing URL).
+// the SDP under the daemon's permanent key. The browser verifies it against the
+// pinned daemonPubKey (anti-MITM), which also proves the daemon controls its key
+// — so a separate daemon-nonce challenge is unnecessary.
 func signedAnswer(sdp string, priv ed25519.PrivateKey) signal.Msg {
 	return signal.Msg{Type: signal.TypeAnswer, SDP: sdp, Sig: signal.Sign(priv, []byte(sdp))}
 }
 
-// DialSignal connects to the signaling broker, registers a room under token,
-// and serves exactly one client: it relays the client's offer into a fresh
-// session-scoped control-plane peer (reusing startSession) and sends back a
-// signed answer. The signaling socket is handshake-only — once the answer is
-// sent it closes, and the live P2P peer carries everything else (decision #50;
-// disconnect detection stays on pion via sess.OnClose). Blocks until the peer
-// closes or ctx is cancelled.
-func (s *Server) DialSignal(ctx context.Context, signalURL, token, pubKeyB64 string, priv ed25519.PrivateKey) error {
+// ServeSignal keeps a persistent registration on the broker under the daemon's
+// identity and serves reconnecting pinned clients one at a time, forever, with
+// exponential-backoff auto-reconnect. win is the (possibly closed) enrollment
+// window letting a not-yet-pinned client enroll with secret S. Returns when ctx
+// is cancelled.
+func (s *Server) ServeSignal(ctx context.Context, signalURL string, id Identity, pinned *PinnedStore, win *pairingWindow) error {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		start := time.Now()
+		err := s.serveOnce(ctx, signalURL, id, pinned, win)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// A connection that stayed up well past the max backoff was healthy;
+		// reset so the first drop after a long stable period retries promptly
+		// instead of inheriting a stale 30s penalty.
+		if time.Since(start) > 30*time.Second {
+			backoff = time.Second
+		}
+		log.Printf("signaling connection lost: %v; reconnecting in %s", err, backoff)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if backoff *= 2; backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
+	return ctx.Err()
+}
+
+// serveOnce holds one broker connection: register, then process the relayed
+// handshake for a single active client at a time. The live P2P peer runs in
+// pion's own goroutines; the broker WS stays open for the next client (revises
+// #51: signaling is now persistent presence, not handshake-then-close).
+func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, pinned *PinnedStore, win *pairingWindow) error {
 	ws, _, err := websocket.DefaultDialer.DialContext(ctx, signalURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial signaling: %w", err)
 	}
 	defer ws.Close()
 
-	if err := ws.WriteJSON(signal.Msg{
-		Type: signal.TypeRegister, Room: token, Role: signal.RoleDaemon, PubKey: pubKeyB64,
-	}); err != nil {
+	var wmu sync.Mutex
+	send := func(m signal.Msg) error { wmu.Lock(); defer wmu.Unlock(); return ws.WriteJSON(m) }
+
+	if err := send(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon, Daemon: id.PubB64}); err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
 
-	// Wait for the offer; capture iceServers if they arrive first so the daemon
-	// side gathers with matching servers.
-	var iceServers []webrtc.ICEServer
-	var offerSDP string
-	for offerSDP == "" {
+	// Single active client session state.
+	var (
+		sess       *rtc.Session
+		disp       *rtcDispatch
+		sessCancel context.CancelFunc
+		iceServers []webrtc.ICEServer
+		authPub    string
+		authNonce  string
+		enrolling  bool
+		authed     bool
+	)
+	cleanup := func() {
+		// sessCancel may already have fired via OnClose; CancelFunc is idempotent.
+		if sessCancel != nil {
+			sessCancel()
+		}
+		if disp != nil {
+			disp.stopAttachment()
+		}
+		if sess != nil {
+			_ = sess.Close()
+		}
+		sess, disp, sessCancel = nil, nil, nil
+		authPub, authNonce, enrolling, authed = "", "", false, false
+		iceServers = nil
+	}
+	defer cleanup()
+
+	for {
 		var m signal.Msg
 		if err := ws.ReadJSON(&m); err != nil {
 			return fmt.Errorf("read signaling: %w", err)
 		}
 		switch m.Type {
+		case signal.TypeConnect:
+			cleanup() // drop any prior client
+			allow, enr := false, false
+			if pinned.Contains(m.PubKey) {
+				allow = true
+				// NOTE: a valid enrollment proof consumes the single-use window here,
+				// even if the client subsequently fails the key challenge below. An
+				// attacker would need to know S to reach this path; the user re-arms
+				// with P. (Acceptable for the self-host scope.)
+			} else if win.verify(m.PubKey, m.Nonce, m.Pair, time.Now()) {
+				allow, enr = true, true
+			}
+			if !allow {
+				_ = send(signal.Msg{Type: signal.TypeError, Msg: "not paired"})
+				continue
+			}
+			nonce, nerr := signal.NewNonce()
+			if nerr != nil {
+				_ = send(signal.Msg{Type: signal.TypeError, Msg: "nonce error"})
+				continue
+			}
+			authPub, authNonce, enrolling, authed = m.PubKey, nonce, enr, false
+			_ = send(signal.Msg{Type: signal.TypeChallenge, Nonce: nonce})
 		case signal.TypeICEServers:
 			iceServers = toWebRTC(m.ICEServers)
+		case signal.TypeProof:
+			if authPub == "" || !signal.Verify(authPub, []byte(authNonce), m.Sig) {
+				_ = send(signal.Msg{Type: signal.TypeError, Msg: "challenge failed"})
+				cleanup()
+				continue
+			}
+			if enrolling {
+				_ = pinned.Add(authPub, "")
+			}
+			authed = true
 		case signal.TypeOffer:
-			offerSDP = m.SDP
-		case signal.TypeError:
-			return fmt.Errorf("signaling: %s", m.Msg)
+			if !authed {
+				_ = send(signal.Msg{Type: signal.TypeError, Msg: "unauthenticated"})
+				continue
+			}
+			sctx, cancel := context.WithCancel(ctx)
+			ns, nd, serr := s.startSession(sctx, iceServers)
+			if serr != nil {
+				cancel()
+				_ = send(signal.Msg{Type: signal.TypeError, Msg: serr.Error()})
+				continue
+			}
+			sess, disp, sessCancel = ns, nd, cancel
+			// On peer death, cancel the session AND reap its sidecar eagerly —
+			// don't wait for the broker's peerLeft (which may never come on a
+			// silent ICE failure). stopAttachment is idempotent, so the later
+			// cleanup() calling it again is harmless.
+			ns.OnClose(func() { cancel(); nd.stopAttachment() })
+			answerSDP, aerr := ns.Answer(m.SDP)
+			if aerr != nil {
+				_ = send(signal.Msg{Type: signal.TypeError, Msg: aerr.Error()})
+				cleanup()
+				continue
+			}
+			_ = send(signedAnswer(answerSDP, id.Priv))
 		case signal.TypePeerLeft:
-			return fmt.Errorf("signaling: client left before offer")
+			cleanup()
 		}
 	}
-
-	sessCtx, cancel := context.WithCancel(ctx)
-	sess, d, err := s.startSession(sessCtx, iceServers)
-	if err != nil {
-		cancel()
-		_ = ws.WriteJSON(signal.Msg{Type: signal.TypeError, Msg: err.Error()})
-		return err
-	}
-	defer sess.Close()
-	defer d.stopAttachment()
-	defer cancel()
-	sess.OnClose(cancel)
-
-	answerSDP, err := sess.Answer(offerSDP)
-	if err != nil {
-		_ = ws.WriteJSON(signal.Msg{Type: signal.TypeError, Msg: err.Error()})
-		return err
-	}
-	if err := ws.WriteJSON(signedAnswer(answerSDP, priv)); err != nil {
-		return fmt.Errorf("send answer: %w", err)
-	}
-
-	// Handshake complete. Close the signaling socket and hold the live peer
-	// until it drops or ctx is cancelled.
-	_ = ws.Close()
-	<-sessCtx.Done()
-	return nil
 }

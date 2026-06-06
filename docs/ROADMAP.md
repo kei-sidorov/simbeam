@@ -82,6 +82,16 @@ go run ./cmd/simcastd list
 и бут выключенного по DataChannel, выбор симулятора → видео по WebRTC, тачи по DataChannel;
 в одной сети P2P идёт напрямую (host), TURN не задействован.
 
+### Phase 3C — done
+
+Постоянная парность (спарились ключами один раз → реконнект по `daemonID` без QR),
+аккаунты-по-ключам, подписки (`POST /v1/subscription`, две подписи, SQLite за
+`Store`), гейт TURN по реальной подписке (стаб `--grant-turn` убран). Дизайн —
+`docs/superpowers/specs/2026-06-04-phase3c-identity-accounts-design.md`; план —
+`docs/superpowers/plans/2026-06-04-phase3c-identity-accounts.md`. Решения #55–#64.
+**Phase 4** несёт: серверную проверку чека Apple (флип `source`), TLS/домен,
+Homebrew-дистрибуцию, Postgres (через `Store`).
+
 ---
 
 ## Phase 4 — Дистрибуция + прод-облако

@@ -5,6 +5,11 @@
 *.out
 /dist/            # GoReleaser output
 
+# Locally-built command binaries (go build ./...)
+/simcastd
+/simcast-signal
+/simcast.db       # default SQLite store path
+
 # macOS
 .DS_Store
 

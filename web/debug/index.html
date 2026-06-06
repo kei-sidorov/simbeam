@@ -19,6 +19,23 @@
     <button id="modeRtc" class="active">RTC</button>
     <button id="modeJpg">JPG</button>
   </div>
+  <div id="identity" style="margin:8px 0; padding:8px; border:1px solid #eee; font-size:13px;">
+    <b>Account key:</b> <code id="pubkey">…</code>
+    <button id="resetIdentity" title="new account for testing">reset</button>
+  </div>
+  <div id="macs" style="margin:8px 0;">
+    <b>My Macs:</b>
+    <div id="macList">none yet</div>
+    <button id="pairBtn" style="display:none;">Pair this Mac</button>
+  </div>
+  <div id="subPanel" style="margin:8px 0; padding:8px; border:1px solid #eee; font-size:13px;">
+    <b>Subscription (StoreKit emulation):</b>
+    <input id="subProduct" value="pro.monthly" size="12">
+    expires <input id="subExpires" type="date">
+    <button id="subApply">Apply</button>
+    <span id="subStatus"></span>
+  </div>
+  <div id="turnIndicator" style="margin:8px 0; font-size:13px;"></div>
   <h3>Simulators</h3>
   <div id="sims">loading…</div>
   <img id="screenImg" class="surface" alt="simulator">
@@ -41,10 +58,166 @@ let ws = null;                          // jpg path
 let pc = null, dc = null, sig = null;   // rtc path
 let startGen = 0;
 
+// ---- 3C: account identity (WebCrypto Ed25519, persisted in localStorage) ----
+const APP_SECRET = 'dev-app-secret'; // must equal the broker's SIMCAST_APP_SECRET in local dev
+let clientPriv = null;               // CryptoKey (Ed25519 private, usage ['sign'])
+let clientPub = null;                // base64 (std) raw public key = account id
+
+function bytesToB64(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s); }
+
+async function loadOrCreateIdentity() {
+  const stored = localStorage.getItem('simcast_priv_pkcs8');
+  const storedPub = localStorage.getItem('simcast_pub');
+  if (stored && storedPub) {
+    clientPriv = await crypto.subtle.importKey('pkcs8', b64ToBytes(stored), {name: 'Ed25519'}, true, ['sign']);
+    clientPub = storedPub;
+    return;
+  }
+  const kp = await crypto.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']);
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
+  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+  clientPriv = kp.privateKey;
+  clientPub = bytesToB64(raw);
+  localStorage.setItem('simcast_priv_pkcs8', bytesToB64(pkcs8));
+  localStorage.setItem('simcast_pub', clientPub);
+}
+
+async function signEd25519(bytes) {
+  const sig = await crypto.subtle.sign('Ed25519', clientPriv, bytes);
+  return bytesToB64(new Uint8Array(sig));
+}
+
+async function hmacSha256B64(secret, bytes) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, bytes);
+  return bytesToB64(new Uint8Array(sig));
+}
+
+// EnrollProof = base64(HMAC-SHA256(S, clientPubKey ‖ 0x00 ‖ nonce)). Bytes must
+// match the Go server byte-for-byte.
+async function enrollProof(secret, pub, nonce) {
+  const enc = new TextEncoder();
+  const a = enc.encode(pub), b = enc.encode(nonce);
+  const buf = new Uint8Array(a.length + 1 + b.length);
+  buf.set(a, 0); buf[a.length] = 0; buf.set(b, a.length + 1);
+  return hmacSha256B64(secret, buf);
+}
+
+// Canonical subscription bytes: pub ‖ 0x1f ‖ product ‖ 0x1f ‖ expires ‖ 0x1f ‖ issued.
+function canonicalSub(pub, product, expires, issued) {
+  return new TextEncoder().encode([pub, product, expires, issued].join('\x1f'));
+}
+
+function renderIdentity() {
+  document.getElementById('pubkey').textContent = clientPub ? clientPub.slice(0, 16) + '…' : '…';
+}
+
+document.getElementById('resetIdentity').onclick = async () => {
+  localStorage.removeItem('simcast_priv_pkcs8');
+  localStorage.removeItem('simcast_pub');
+  await loadOrCreateIdentity();
+  renderIdentity();
+  alert('New account key generated. You must re-pair your Macs.');
+};
+
+// ---- 3C: my Macs (saved pinned daemons) ----
+function loadMacs() {
+  try { return JSON.parse(localStorage.getItem('simcast_macs') || '[]'); } catch (e) { return []; }
+}
+function saveMac(mac) {
+  const macs = loadMacs().filter(m => m.daemon !== mac.daemon);
+  macs.push(mac);
+  localStorage.setItem('simcast_macs', JSON.stringify(macs));
+  renderMacs();
+}
+function renderMacs() {
+  const macs = loadMacs();
+  const el = document.getElementById('macList');
+  el.innerHTML = '';
+  if (!macs.length) { el.textContent = 'none yet'; return; }
+  macs.forEach(m => {
+    const b = document.createElement('button');
+    b.textContent = `${m.name || 'Mac'} (${m.daemon.slice(0, 8)}…)`;
+    b.onclick = () => connectRemote(m); // defined in Task 17
+    el.appendChild(b);
+  });
+}
+
+// ---- 3C: subscription emulation + TURN indicator ----
+// The broker base URL is derived from the pairing/saved signal WS URL
+// (ws://host:9000/ws → http://host:9000).
+function brokerHTTPBase() {
+  const s = (currentSession && currentSession.signal) || (pairing() && pairing().signal);
+  if (!s) return null;
+  return s.replace(/^ws/, 'http').replace(/\/ws$/, '');
+}
+
+function setupSubscriptionPanel() {
+  document.getElementById('subApply').onclick = applySubscription;
+}
+
+// applySubscription sends a REAL signed POST /v1/subscription (replaces StoreKit):
+// X-App-Sig = HMAC-SHA256(APP_SECRET, canonical); X-Account-Sig = Ed25519(client).
+async function applySubscription() {
+  const base = brokerHTTPBase();
+  if (!base) { alert('Pair or select a Mac first (need the broker URL).'); return; }
+  const product = document.getElementById('subProduct').value;
+  const dateVal = document.getElementById('subExpires').value; // yyyy-mm-dd
+  if (!dateVal) { alert('pick an expiry date'); return; }
+  const expires = new Date(dateVal + 'T00:00:00Z').toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const issued = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+  const canon = canonicalSub(clientPub, product, expires, issued);
+  const appSig = await hmacSha256B64(APP_SECRET, canon);
+  const accSig = await signEd25519(canon);
+
+  const resp = await fetch(base + '/v1/subscription', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-App-Sig': appSig, 'X-Account-Sig': accSig},
+    body: JSON.stringify({client_pubkey: clientPub, product_id: product, expires_at: expires, issued_at: issued}),
+  });
+  const status = document.getElementById('subStatus');
+  status.textContent = resp.ok ? ` ✓ applied (expires ${expires})` : ` ✗ ${resp.status} ${await resp.text()}`;
+}
+
+// refreshTurnIndicator shows whether the issued iceServers include a TURN relay,
+// making the subscription gate visible to the eye.
+function refreshTurnIndicator(iceServers) {
+  const hasTurn = (iceServers || []).some(s => {
+    const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+    return urls.some(u => /^turns?:/.test(String(u))); // turn: or turns: (TLS)
+  });
+  document.getElementById('turnIndicator').textContent =
+    'iceServers contain TURN: ' + (hasTurn ? 'YES (subscriber)' : 'no (STUN only)');
+}
+
+// setupPairButton shows the "Pair this Mac" button iff the URL fragment carries
+// a pair secret. Clicking it runs the first-pairing enrollment handshake.
+function setupPairButton() {
+  const p = pairing();
+  const btn = document.getElementById('pairBtn');
+  if (!p) { btn.style.display = 'none'; return; }
+  btn.style.display = 'inline-block';
+  btn.textContent = `Pair this Mac (${p.daemon.slice(0, 8)}…)`;
+  btn.onclick = () => enroll(p);
+}
+
+// enroll runs the first-pairing handshake (carries the HMAC(S) proof). On
+// success the Mac is saved to "my Macs" and the live session continues.
+function enroll(p) {
+  startRemoteSession({signal: p.signal, daemon: p.daemon, daemonPub: p.daemon, pair: p.pair, save: true});
+}
+
+// connectRemote reconnects to a saved Mac (no secret, key-only challenge).
+function connectRemote(mac) {
+  startRemoteSession({signal: mac.signal, daemon: mac.daemon, daemonPub: mac.daemonPub, pair: null, save: false, name: mac.name});
+}
+
 function surface() { return mode === 'rtc' ? vidEl : imgEl; }
 
 function teardown() {
-  startGen++; // invalidate any in-flight startControlPlane awaiting ICE
+  startGen++; // invalidate any in-flight startRemoteSession awaiting ICE
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   if (ws) { ws.close(); ws = null; }
   if (sig) { try { sig.close(); } catch (e) {} sig = null; }
   if (dc) { try { dc.close(); } catch (e) {} dc = null; }
@@ -77,9 +250,8 @@ function setMode(m) {
 //   rtc → control plane comes up first, list arrives over the DataChannel
 //   jpg → REST (Phase 1 fallback)
 function enterMode() {
-  simsEl.innerHTML = 'loading…';
-  if (mode === 'rtc') startControlPlane();
-  else loadSimsREST();
+  simsEl.innerHTML = mode === 'rtc' ? 'pick or pair a Mac above' : 'loading…';
+  if (mode === 'jpg') loadSimsREST();
 }
 
 function renderSims(sims) {
@@ -102,33 +274,125 @@ function onPick(s) {
 // the broker carried in the URL fragment (#signal&token&pubkey). The peer +
 // control DataChannel and all downstream control-plane logic are identical.
 
+// pairing() returns enrollment coordinates iff the URL fragment carries a pair
+// secret: {signal, daemon, pair}. Reconnects use saved Macs instead.
 function pairing() {
-  // Coordinates live in the URL fragment so they never hit a server log.
   const f = new URLSearchParams(location.hash.slice(1));
-  const signal = f.get('signal'), token = f.get('token'), pubkey = f.get('pubkey');
-  return (signal && token && pubkey) ? {signal, token, pubkey} : null;
+  const signal = f.get('signal'), daemon = f.get('daemon'), pair = f.get('pair');
+  return (signal && daemon && pair) ? {signal, daemon, pair} : null;
 }
 
-async function startControlPlane() {
+let reconnectTimer = null;
+let currentSession = null; // {signal, daemon, daemonPub, pair, save, name}
+
+// startRemoteSession builds the peer + control DataChannel and runs the 3C
+// handshake. On unexpected drop it auto-reconnects (reconnect path, no secret).
+async function startRemoteSession(s) {
+  teardown();
+  currentSession = s;
   const gen = ++startGen;
-  const p = pairing(); // truthy in remote pairing mode (URL fragment present)
-  pc = new RTCPeerConnection(window._iceServers ? {iceServers: window._iceServers} : undefined);
+
+  pc = new RTCPeerConnection();
   pc.addTransceiver('video', {direction: 'recvonly'});
   dc = pc.createDataChannel('control', {ordered: false, maxRetransmits: 0});
-
   pc.ontrack = (ev) => { vidEl.srcObject = ev.streams[0]; minimizeBuffer(pc); showSurface(); };
-  const onState = () => {
-    if (pc.iceConnectionState !== 'failed' && pc.connectionState !== 'failed') return;
-    if (p) showUpsell();                                // remote: relay/NAT failure → upsell
-    else console.log('rtc state', pc.connectionState);  // local: original behavior
-  };
-  pc.oniceconnectionstatechange = onState;
-  pc.onconnectionstatechange = onState;
   dc.onopen = () => dc.send(JSON.stringify({type: 'list'}));
   dc.onmessage = (ev) => onCtrlReply(JSON.parse(ev.data));
 
-  if (p) await signalRemote(p, gen);
-  else await signalLocal(gen);
+  const onState = () => {
+    if (!pc) return;
+    if (pc.connectionState === 'failed') {
+      // P2P could not be established (free tier has no relay) — retrying won't
+      // add one, so surface the upsell instead of looping silently.
+      showUpsell();
+      teardown();
+    } else if (pc.connectionState === 'disconnected') {
+      scheduleReconnect(); // transient drop — try to recover (Mac may return)
+    }
+  };
+  pc.onconnectionstatechange = onState;
+
+  await signal3C(s, gen);
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer || !currentSession || currentSession.pair) return; // don't auto-retry an enrollment
+  const s = currentSession;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startRemoteSession({...s, pair: null, save: false}); // reconnect path
+  }, 1000);
+}
+
+// signal3C: join → challenge(sign nonces) → proof → iceServers(offer) →
+// verify signed answer. daemonPub authenticates the Mac (anti-MITM).
+async function signal3C(s, gen) {
+  sig = new WebSocket(s.signal);
+  let offerSent = false;
+
+  const sendJoin = async () => {
+    const join = {type: 'join', role: 'client', daemon: s.daemon, pubkey: clientPub};
+    if (s.pair) {
+      const nonce = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
+      join.nonce = nonce;
+      join.pair = await enrollProof(s.pair, clientPub, nonce);
+    }
+    sig.send(JSON.stringify(join));
+  };
+
+  sig.onopen = sendJoin;
+  sig.onmessage = async (ev) => {
+    const m = JSON.parse(ev.data);
+    if (gen !== startGen) return; // superseded
+    switch (m.type) {
+      case 'challenge': {
+        const enc = new TextEncoder();
+        const proof = {
+          type: 'proof',
+          sig: await signEd25519(enc.encode(m.nonce)),
+          brokerSig: await signEd25519(enc.encode(m.brokerNonce)),
+        };
+        sig.send(JSON.stringify(proof));
+        break;
+      }
+      case 'iceServers': {
+        window._iceServers = m.iceServers || [];
+        refreshTurnIndicator(window._iceServers); // defined in Task 18
+        pc.setConfiguration({iceServers: window._iceServers});
+        if (!offerSent) {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await iceGatheringComplete(pc);
+          if (gen !== startGen) return;
+          sig.send(JSON.stringify({type: 'offer', sdp: pc.localDescription.sdp}));
+          offerSent = true;
+        }
+        break;
+      }
+      case 'answer': {
+        const ok = await verifyAnswer(s.daemonPub, m.sdp, m.sig);
+        if (!ok) { showAuthFail(); teardown(); return; }
+        await pc.setRemoteDescription({type: 'answer', sdp: m.sdp});
+        minimizeBuffer(pc);
+        if (s.save) {
+          saveMac({signal: s.signal, daemon: s.daemon, daemonPub: s.daemonPub, name: s.name || 'Mac'});
+          // Enrolled now: drop the one-time secret so an unexpected drop
+          // auto-reconnects via the key-only path instead of being suppressed
+          // by scheduleReconnect's "don't auto-retry an enrollment" guard.
+          if (currentSession) currentSession.pair = null;
+        }
+        break;
+      }
+      case 'error':
+        if (String(m.msg).includes('offline')) { scheduleReconnect(); }
+        else { alert('pairing error: ' + m.msg); teardown(); }
+        break;
+      case 'peerLeft':
+        scheduleReconnect();
+        break;
+    }
+  };
+  sig.onclose = () => { if (gen === startGen) scheduleReconnect(); };
 }
 
 // Local dev signaling: one /rtc WS, offer→answer, no auth (localhost).
@@ -149,44 +413,6 @@ async function signalLocal(gen) {
     } else if (m.type === 'error') {
       alert('rtc signaling error: ' + m.msg);
       teardown();
-    }
-  };
-}
-
-// Remote rendezvous: join the broker room, receive iceServers, exchange a
-// signed offer/answer. The daemon signs its answer SDP; we verify it against
-// the pubkey from the pairing URL before trusting the connection (anti-MITM).
-async function signalRemote(p, gen) {
-  sig = new WebSocket(p.signal);
-  let sentOffer = false;
-
-  const makeAndSendOffer = async () => {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await iceGatheringComplete(pc);
-    if (gen !== startGen) return; // superseded
-    sig.send(JSON.stringify({type: 'offer', sdp: pc.localDescription.sdp}));
-    sentOffer = true;
-  };
-
-  sig.onopen = () => sig.send(JSON.stringify({type: 'join', room: p.token, role: 'client'}));
-  sig.onmessage = async (ev) => {
-    const m = JSON.parse(ev.data);
-    if (m.type === 'iceServers') {
-      window._iceServers = m.iceServers || [];
-      // Apply the issued iceServers before the first offer, then offer.
-      pc.setConfiguration({iceServers: window._iceServers});
-      if (!sentOffer) await makeAndSendOffer();
-    } else if (m.type === 'answer') {
-      const ok = await verifyAnswer(p.pubkey, m.sdp, m.sig);
-      if (!ok) { showAuthFail(); teardown(); return; }
-      await pc.setRemoteDescription({type: 'answer', sdp: m.sdp});
-      minimizeBuffer(pc);
-    } else if (m.type === 'error') {
-      alert('pairing error: ' + m.msg + '\nRescan / re-pair.');
-      teardown();
-    } else if (m.type === 'peerLeft') {
-      console.log('daemon left the room');
     }
   };
 }
@@ -375,7 +601,14 @@ window.addEventListener('keydown', (e) => {
 
 homeBtn.onclick = () => sendControl({type: 'home'});
 
-enterMode();
+(async function init() {
+  await loadOrCreateIdentity();
+  renderIdentity();
+  renderMacs();
+  setupPairButton();          // defined in Task 17
+  setupSubscriptionPanel();   // defined in Task 18
+  if (mode === 'jpg') loadSimsREST();
+})();
 </script>
 </body>
 </html>

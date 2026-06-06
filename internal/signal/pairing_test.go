@@ -6,37 +6,23 @@ import (
 	"testing"
 )
 
-func TestNewTokenUnique(t *testing.T) {
-	a, err := NewToken()
+func TestPairingURL_FragmentCarriesSignalDaemonPair(t *testing.T) {
+	got := PairingURL("http://localhost:8080/", "wss://host/ws", "DAEMONPUB==", "S3cr3t")
+	if !strings.HasPrefix(got, "http://localhost:8080/#") {
+		t.Fatalf("missing client base + fragment: %q", got)
+	}
+	frag := got[strings.Index(got, "#")+1:]
+	v, err := url.ParseQuery(frag)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse fragment: %v", err)
 	}
-	b, _ := NewToken()
-	if a == "" || a == b {
-		t.Fatalf("tokens not unique/non-empty: %q %q", a, b)
+	if v.Get("signal") != "wss://host/ws" {
+		t.Fatalf("signal = %q", v.Get("signal"))
 	}
-}
-
-func TestPairingURLCarriesCoordinatesInFragment(t *testing.T) {
-	got := PairingURL("http://localhost:8080/", "wss://sig.example/ws", "tok123", "PUBKEYB64==")
-
-	// Coordinates must live in the fragment (#...), not the query, so they are
-	// never sent to (or logged by) the client's HTTP server.
-	hash := got[strings.Index(got, "#")+1:]
-	if strings.Contains(got[:strings.Index(got, "#")], "tok123") {
-		t.Fatalf("token leaked into non-fragment part: %q", got)
+	if v.Get("daemon") != "DAEMONPUB==" {
+		t.Fatalf("daemon = %q", v.Get("daemon"))
 	}
-	q, err := url.ParseQuery(hash)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if q.Get("signal") != "wss://sig.example/ws" {
-		t.Fatalf("signal = %q", q.Get("signal"))
-	}
-	if q.Get("token") != "tok123" {
-		t.Fatalf("token = %q", q.Get("token"))
-	}
-	if q.Get("pubkey") != "PUBKEYB64==" {
-		t.Fatalf("pubkey = %q", q.Get("pubkey"))
+	if v.Get("pair") != "S3cr3t" {
+		t.Fatalf("pair = %q", v.Get("pair"))
 	}
 }

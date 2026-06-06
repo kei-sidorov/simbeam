@@ -1,23 +1,30 @@
 package signalbroker
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+
 	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simcast/internal/store"
 )
 
-// dial connects a WS client to the broker's /ws endpoint.
-func dial(t *testing.T, srv *httptest.Server) *websocket.Conn {
+func wsURL(t *testing.T, srv *httptest.Server) string {
 	t.Helper()
-	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
-	c, _, err := websocket.DefaultDialer.Dial(u, nil)
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+}
+
+func dial(t *testing.T, url string) *websocket.Conn {
+	t.Helper()
+	c, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 
@@ -26,199 +33,191 @@ func readMsg(t *testing.T, c *websocket.Conn) signal.Msg {
 	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var m signal.Msg
 	if err := c.ReadJSON(&m); err != nil {
-		t.Fatalf("readJSON: %v", err)
+		t.Fatalf("read: %v", err)
 	}
 	return m
 }
 
-func newTestServer(grant bool) *httptest.Server {
+func TestClientWithoutDaemonGetsOffline(t *testing.T) {
+	b := New(Config{STUNURLs: []string{"stun:x"}})
+	srv := httptest.NewServer(b.Handler())
+	defer srv.Close()
+
+	c := dial(t, wsURL(t, srv))
+	_ = c.WriteJSON(signal.Msg{Type: signal.TypeJoin, Daemon: "missing", PubKey: "pub", Role: signal.RoleClient})
+	m := readMsg(t, c)
+	if m.Type != signal.TypeError || !strings.Contains(m.Msg, "offline") {
+		t.Fatalf("want offline error, got %+v", m)
+	}
+}
+
+// TestHandshakeRelayAndGate drives a fake daemon + fake client through the broker
+// and asserts: connect reaches the daemon; the broker adds brokerNonce on the
+// challenge; a bad brokerSig is rejected; a good one yields iceServers whose TURN
+// presence follows the subscription Store.
+func TestHandshakeRelayAndGate(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	st, err := store.OpenSQLite(t.TempDir() + "/s.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
 	b := New(Config{
-		STUNURLs:   []string{"stun:stun.example:3478"},
-		TURNURLs:   []string{"turn:turn.example:3478"},
-		TURNSecret: "shared-secret",
-		TURNTTL:    time.Minute,
-		GrantTURN:  func(string) bool { return grant },
-		Now:        func() time.Time { return time.Unix(1000, 0) },
+		STUNURLs:   []string{"stun:x"},
+		TURNURLs:   []string{"turn:relay"},
+		TURNSecret: "secret",
+		Store:      st,
+		Now:        func() time.Time { return now },
 	})
-	return httptest.NewServer(b.Handler())
-}
-
-func TestPairRelaysOfferAndAnswer(t *testing.T) {
-	srv := newTestServer(false)
+	srv := httptest.NewServer(b.Handler())
 	defer srv.Close()
+	url := wsURL(t, srv)
 
-	daemon := dial(t, srv)
-	defer daemon.Close()
-	if err := daemon.WriteJSON(signal.Msg{
-		Type: signal.TypeRegister, Room: "tok", Role: signal.RoleDaemon, PubKey: "PK==",
-	}); err != nil {
+	// Client keypair (Ed25519) so signatures verify.
+	clientPub, clientPriv, err := signal.GenerateKeyPair()
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	client := dial(t, srv)
-	defer client.Close()
-	if err := client.WriteJSON(signal.Msg{
-		Type: signal.TypeJoin, Room: "tok", Role: signal.RoleClient,
-	}); err != nil {
-		t.Fatal(err)
+	// Fake daemon registers and stays present.
+	daemon := dial(t, url)
+	_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon, Daemon: "DAEMONID"})
+
+	// Helper: run one client handshake, return the iceServers it receives.
+	run := func(active bool) signal.Msg {
+		if active {
+			_ = st.Upsert(context.Background(), store.Subscription{
+				ClientPubKey: clientPub, ProductID: "p",
+				ExpiresAt: "2026-12-31T00:00:00Z", IssuedAt: "2026-06-04T00:00:00Z",
+				Source: "client", UpdatedAt: "2026-06-04T00:00:00Z",
+			})
+		}
+		client := dial(t, url)
+		_ = client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: "DAEMONID", PubKey: clientPub})
+
+		// Daemon receives connect, replies with its challenge nonce.
+		conn := readMsg(t, daemon)
+		if conn.Type != signal.TypeConnect || conn.PubKey != clientPub {
+			t.Fatalf("daemon want connect for client, got %+v", conn)
+		}
+		_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeChallenge, Nonce: "DNONCE"})
+
+		// Client receives challenge with the broker nonce attached.
+		ch := readMsg(t, client)
+		if ch.Type != signal.TypeChallenge || ch.Nonce != "DNONCE" || ch.BrokerNonce == "" {
+			t.Fatalf("client want challenge+brokerNonce, got %+v", ch)
+		}
+		// Client proves both nonces.
+		_ = client.WriteJSON(signal.Msg{
+			Type:      signal.TypeProof,
+			Sig:       signal.Sign(clientPriv, []byte(ch.Nonce)),
+			BrokerSig: signal.Sign(clientPriv, []byte(ch.BrokerNonce)),
+		})
+		// Client receives iceServers.
+		ice := readMsg(t, client)
+		if ice.Type != signal.TypeICEServers {
+			t.Fatalf("client want iceServers, got %+v", ice)
+		}
+		// Daemon also receives iceServers, then the relayed proof (brokerSig
+		// stripped). The broker emits both peers' iceServers before relaying the
+		// proof, so the daemon's iceServers arrives first.
+		_ = readMsg(t, daemon) // daemon iceServers
+		pr := readMsg(t, daemon)
+		if pr.Type != signal.TypeProof || pr.BrokerSig != "" || pr.Sig == "" {
+			t.Fatalf("daemon want stripped proof, got %+v", pr)
+		}
+		_ = client.Close()
+		// Drain the peerLeft the broker sends the daemon on client close.
+		_ = readMsg(t, daemon)
+		return ice
 	}
 
-	// On join the client receives iceServers. Free tier (grant=false): STUN only.
-	ice := readMsg(t, client)
-	if ice.Type != signal.TypeICEServers || len(ice.ICEServers) != 1 {
-		t.Fatalf("want one STUN-only iceServers msg, got %+v", ice)
+	// No subscription → STUN only.
+	if ice := run(false); len(ice.ICEServers) != 1 {
+		t.Fatalf("unsubscribed should get STUN only, got %d servers", len(ice.ICEServers))
 	}
-	if len(ice.ICEServers[0].URLs) == 0 || !strings.HasPrefix(ice.ICEServers[0].URLs[0], "stun:") {
-		t.Fatalf("want STUN url, got %+v", ice.ICEServers[0])
-	}
-
-	// Daemon also receives iceServers once the client joins.
-	if dice := readMsg(t, daemon); dice.Type != signal.TypeICEServers {
-		t.Fatalf("daemon want iceServers, got %+v", dice)
-	}
-
-	// Client offer is relayed to the daemon.
-	if err := client.WriteJSON(signal.Msg{Type: signal.TypeOffer, SDP: "OFFER_SDP"}); err != nil {
-		t.Fatal(err)
-	}
-	got := readMsg(t, daemon)
-	if got.Type != signal.TypeOffer || got.SDP != "OFFER_SDP" {
-		t.Fatalf("daemon got %+v, want offer OFFER_SDP", got)
-	}
-
-	// Daemon's signed answer is relayed to the client.
-	if err := daemon.WriteJSON(signal.Msg{Type: signal.TypeAnswer, SDP: "ANSWER_SDP", Sig: "SIG=="}); err != nil {
-		t.Fatal(err)
-	}
-	got = readMsg(t, client)
-	if got.Type != signal.TypeAnswer || got.SDP != "ANSWER_SDP" || got.Sig != "SIG==" {
-		t.Fatalf("client got %+v, want signed answer", got)
-	}
-}
-
-func TestSubscriberGetsTURN(t *testing.T) {
-	srv := newTestServer(true)
-	defer srv.Close()
-
-	daemon := dial(t, srv)
-	defer daemon.Close()
-	_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeRegister, Room: "tok", Role: signal.RoleDaemon, PubKey: "PK=="})
-
-	client := dial(t, srv)
-	defer client.Close()
-	_ = client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Room: "tok", Role: signal.RoleClient})
-
-	ice := readMsg(t, client)
-	if ice.Type != signal.TypeICEServers || len(ice.ICEServers) != 2 {
-		t.Fatalf("subscriber wants STUN+TURN (2 entries), got %+v", ice)
-	}
-	turn := ice.ICEServers[1]
-	if len(turn.URLs) == 0 || !strings.HasPrefix(turn.URLs[0], "turn:") {
-		t.Fatalf("want TURN url, got %+v", turn)
-	}
-	if turn.Username == "" || turn.Credential == "" {
-		t.Fatalf("TURN entry missing ephemeral creds: %+v", turn)
-	}
-	// username = "<expiry>:<room>", expiry = injected now(1000) + ttl(60).
-	if turn.Username != "1060:tok" {
-		t.Fatalf("TURN username = %q, want 1060:tok", turn.Username)
+	// Active subscription → STUN + TURN.
+	if ice := run(true); len(ice.ICEServers) != 2 {
+		t.Fatalf("subscribed should get STUN+TURN, got %d servers", len(ice.ICEServers))
 	}
 }
 
-func TestJoinUnknownRoomErrors(t *testing.T) {
-	srv := newTestServer(false)
+func TestBadBrokerSigRejected(t *testing.T) {
+	b := New(Config{STUNURLs: []string{"stun:x"}})
+	srv := httptest.NewServer(b.Handler())
 	defer srv.Close()
+	url := wsURL(t, srv)
 
-	client := dial(t, srv)
-	defer client.Close()
-	_ = client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Room: "nope", Role: signal.RoleClient})
+	clientPub, _, _ := signal.GenerateKeyPair()
+	daemon := dial(t, url)
+	_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon, Daemon: "D"})
 
-	got := readMsg(t, client)
-	if got.Type != signal.TypeError {
-		t.Fatalf("joining a room with no daemon should error (rescan), got %+v", got)
+	client := dial(t, url)
+	_ = client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: "D", PubKey: clientPub})
+	_ = readMsg(t, daemon) // connect
+	_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeChallenge, Nonce: "DNONCE"})
+	_ = readMsg(t, client) // challenge
+
+	// Garbage brokerSig → broker must reject with an error.
+	_ = client.WriteJSON(signal.Msg{Type: signal.TypeProof, Sig: "x", BrokerSig: "not-a-sig"})
+	m := readMsg(t, client)
+	if m.Type != signal.TypeError {
+		t.Fatalf("want error on bad broker sig, got %+v", m)
 	}
 }
 
-// When one side drops, the surviving peer is notified with peerLeft.
-func TestPeerLeftOnDisconnect(t *testing.T) {
-	srv := newTestServer(false)
+// TestSecondClientDisplacesFirst verifies the one-client-at-a-time takeover is
+// clean: when a second client joins the same daemon, the first client's
+// connection is closed (its goroutine stops) so it cannot inject proof/offer into
+// the new client's session, and the daemon ends up handshaking the second client.
+func TestSecondClientDisplacesFirst(t *testing.T) {
+	b := New(Config{STUNURLs: []string{"stun:x"}})
+	srv := httptest.NewServer(b.Handler())
 	defer srv.Close()
+	url := wsURL(t, srv)
 
-	daemon := dial(t, srv)
-	defer daemon.Close()
-	if err := daemon.WriteJSON(signal.Msg{Type: signal.TypeRegister, Room: "tok", Role: signal.RoleDaemon, PubKey: "PK=="}); err != nil {
-		t.Fatal(err)
-	}
+	clientPub, _, _ := signal.GenerateKeyPair()
+	daemon := dial(t, url)
+	_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon, Daemon: "D"})
 
-	client := dial(t, srv)
-	if err := client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Room: "tok", Role: signal.RoleClient}); err != nil {
-		t.Fatal(err)
+	// Client A joins and reaches the daemon (connect #1).
+	a, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
 	}
-	if ice := readMsg(t, client); ice.Type != signal.TypeICEServers {
-		t.Fatalf("want iceServers first, got %+v", ice)
-	}
-	// Daemon also receives iceServers when the client joins; drain it first.
-	if dice := readMsg(t, daemon); dice.Type != signal.TypeICEServers {
-		t.Fatalf("daemon want iceServers, got %+v", dice)
+	_ = a.WriteJSON(signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: "D", PubKey: clientPub})
+	if c1 := readMsg(t, daemon); c1.Type != signal.TypeConnect {
+		t.Fatalf("daemon want connect for A, got %+v", c1)
 	}
 
-	// Client drops → daemon must receive peerLeft.
-	client.Close()
-	got := readMsg(t, daemon)
-	if got.Type != signal.TypePeerLeft {
-		t.Fatalf("daemon want peerLeft after client drop, got %+v", got)
+	// Client B joins the same daemon → takes over.
+	b2, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
 	}
-}
+	t.Cleanup(func() { _ = b2.Close() })
+	_ = b2.WriteJSON(signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: "D", PubKey: clientPub})
 
-// A stale daemon's cleanup must not sever a live client bound to a freshly
-// re-registered daemon on the same token (connection-identity guard).
-func TestReconnectDoesNotClobberLiveClient(t *testing.T) {
-	srv := newTestServer(false)
-	defer srv.Close()
-
-	d1 := dial(t, srv)
-	if err := d1.WriteJSON(signal.Msg{Type: signal.TypeRegister, Room: "tok", Role: signal.RoleDaemon, PubKey: "PK=="}); err != nil {
-		t.Fatal(err)
+	// The broker closed A's connection: A's next read must error.
+	_ = a.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, rerr := a.ReadMessage(); rerr == nil {
+		t.Fatalf("displaced client A should have been disconnected, but read succeeded")
 	}
 
-	client := dial(t, srv)
-	defer client.Close()
-	if err := client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Room: "tok", Role: signal.RoleClient}); err != nil {
-		t.Fatal(err)
+	// The daemon receives a peerLeft (from A's displacement) and/or a connect for
+	// B; drain until we see the connect for B, proving B's handshake started.
+	deadline := time.Now().Add(2 * time.Second)
+	sawConnectForB := false
+	for time.Now().Before(deadline) {
+		m := readMsg(t, daemon)
+		if m.Type == signal.TypeConnect {
+			sawConnectForB = true
+			break
+		}
+		// otherwise it's a peerLeft from A's displacement — keep reading
 	}
-	if ice := readMsg(t, client); ice.Type != signal.TypeICEServers {
-		t.Fatalf("want iceServers, got %+v", ice)
-	}
-
-	// Second daemon re-registers the same token (overwrites the daemon slot).
-	d2 := dial(t, srv)
-	defer d2.Close()
-	if err := d2.WriteJSON(signal.Msg{Type: signal.TypeRegister, Room: "tok", Role: signal.RoleDaemon, PubKey: "PK2=="}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Confirm d2's registration has been fully processed by the broker before
-	// closing d1: send a probe answer from d2 and verify the client receives it.
-	// This uses d2→client direction so there is no ambiguity about which daemon
-	// is in the slot — the relay only reaches the client if rm.daemon == d2.
-	if err := d2.WriteJSON(signal.Msg{Type: signal.TypeAnswer, SDP: "PROBE_ANS", Sig: "S=="}); err != nil {
-		t.Fatal(err)
-	}
-	if probe := readMsg(t, client); probe.Type != signal.TypeAnswer || probe.SDP != "PROBE_ANS" {
-		t.Fatalf("probe answer not relayed to client, got %+v", probe)
-	}
-
-	// Now d1 drops. Its deferred dropRoom must NOT notify/sever the client,
-	// because rm.daemon is d2, not d1.
-	d1.Close()
-
-	// The client offer must still reach the live daemon d2 (proves the room and
-	// client binding survived d1's cleanup).
-	if err := client.WriteJSON(signal.Msg{Type: signal.TypeOffer, SDP: "OFFER2"}); err != nil {
-		t.Fatal(err)
-	}
-	got := readMsg(t, d2)
-	if got.Type != signal.TypeOffer || got.SDP != "OFFER2" {
-		t.Fatalf("live daemon d2 want offer OFFER2, got %+v", got)
+	if !sawConnectForB {
+		t.Fatalf("daemon never received connect for the second client")
 	}
 }

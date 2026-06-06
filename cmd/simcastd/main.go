@@ -1,6 +1,8 @@
 // Command simcastd is the simcast daemon. Subcommands:
 //   - list: print the real simulators on this machine (Phase 0 bootstrap).
-//   - serve: run the REST API + WebSocket stream server (Phase 1).
+//   - serve: run the REST API + WebSocket stream server (Phase 1); with --signal,
+//     persistent remote rendezvous with P-keypress pairing (Phase 3C).
+//   - unpair: revoke a paired client (Phase 3C).
 package main
 
 import (
@@ -11,12 +13,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"text/tabwriter"
 	"time"
 
 	"github.com/kei-sidorov/simcast/internal/companion"
 	"github.com/kei-sidorov/simcast/internal/server"
 	"github.com/kei-sidorov/simcast/internal/signal"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -37,6 +41,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "unpair":
+		if err := runUnpair(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage(os.Stdout)
 	default:
@@ -51,8 +60,18 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  simcastd list    List available iOS simulators via idb_companion")
-	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url)")
+	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
+	fmt.Fprintln(w, "  simcastd unpair  Revoke a paired client: simcastd unpair <clientPubKey>")
 	fmt.Fprintln(w, "  simcastd help    Show this help")
+}
+
+// defaultStatePath returns ~/.simcast/<name>, falling back to ./.simcast/<name>.
+func defaultStatePath(name string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(".simcast", name)
+	}
+	return filepath.Join(home, ".simcast", name)
 }
 
 func runServe(argv []string) error {
@@ -61,6 +80,9 @@ func runServe(argv []string) error {
 	webDir := fs.String("web", "", "directory with debug client (served at /); empty = API only")
 	signalURL := fs.String("signal", "", "remote rendezvous: signaling broker WS URL (e.g. wss://host/ws); empty = local-only")
 	clientURL := fs.String("client-url", "", "base URL of the browser debug client for the pairing link; empty = http://localhost<addr>/")
+	identityPath := fs.String("identity", defaultStatePath("identity.key"), "path to the daemon's persistent Ed25519 identity")
+	clientsPath := fs.String("clients", defaultStatePath("clients.json"), "path to the pinned-clients store")
+	pairTTL := fs.Duration("pair-ttl", 5*time.Minute, "how long an enrollment window stays open after pressing P")
 	_ = fs.Parse(argv)
 
 	c := companion.New()
@@ -70,9 +92,8 @@ func runServe(argv []string) error {
 	}
 	srv := server.New(c, *webDir).WithBinary(path)
 
-	// Remote rendezvous: dial the broker, print a pairing URL, serve one client.
 	if *signalURL != "" {
-		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir)
+		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir, *identityPath, *clientsPath, *pairTTL)
 	}
 
 	fmt.Printf("simcastd serving on %s (idb_companion: %s)\n", *addr, path)
@@ -82,31 +103,29 @@ func runServe(argv []string) error {
 	return http.ListenAndServe(*addr, srv.Handler())
 }
 
-// runRemote dials the signaling broker and serves a single paired client. It
-// also serves the local HTTP (debug client) so the browser has somewhere to
-// load from; the pairing URL points there with the signaling coordinates in
-// the fragment.
-func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir string) error {
-	pubKey, priv, err := signal.GenerateKeyPair()
+// runRemote loads the daemon's persistent identity + pinned clients, serves the
+// debug client locally (so the browser can load it), connects persistently to the
+// broker under daemonID, and watches the terminal: press P to open a one-time
+// enrollment window (prints the pairing URL), Q/Ctrl-C to quit.
+func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityPath, clientsPath string, pairTTL time.Duration) error {
+	id, err := server.LoadOrCreateIdentity(identityPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("identity: %w", err)
 	}
-	token, err := signal.NewToken()
+	pinned, err := server.LoadPinnedStore(clientsPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("pinned store: %w", err)
 	}
+	win := server.NewPairingWindow()
+
 	base := clientURL
 	if base == "" {
 		base = "http://localhost" + addr + "/"
 	}
-
-	// Serve the debug client locally (so the browser can load it) in the
-	// background; pairing coordinates travel via the URL fragment, not this server.
-	// Pre-bind synchronously so a port conflict surfaces before the pairing URL is printed.
 	if webDir != "" {
-		ln, err := net.Listen("tcp", addr)
-		if err != nil {
-			return fmt.Errorf("local http listen on %s: %w", addr, err)
+		ln, lerr := net.Listen("tcp", addr)
+		if lerr != nil {
+			return fmt.Errorf("local http listen on %s: %w", addr, lerr)
 		}
 		go func() {
 			if err := http.Serve(ln, srv.Handler()); err != nil {
@@ -115,13 +134,77 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir string) er
 		}()
 	}
 
-	fmt.Printf("simcastd remote mode — broker: %s\n", signalURL)
-	fmt.Println("Pair this device by opening:")
-	fmt.Println("  " + signal.PairingURL(base, signalURL, token, pubKey))
-	fmt.Println("(token is one-time; restart to pair again)")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	ctx := context.Background()
-	return srv.DialSignal(ctx, signalURL, token, pubKey, priv)
+	fmt.Printf("simcastd remote mode — broker: %s\n", signalURL)
+	fmt.Printf("daemonID: %s\n", id.PubB64)
+	fmt.Println("Press P to pair a new device (opens a one-time window). Press Q to quit.")
+
+	onPair := func() {
+		secret, serr := signal.NewPairingSecret()
+		if serr != nil {
+			fmt.Printf("\rpairing error: %v\r\n", serr)
+			return
+		}
+		win.Open(secret, time.Now(), pairTTL)
+		fmt.Printf("\r\nPair this device by opening (window open %s):\r\n  %s\r\n",
+			pairTTL, signal.PairingURL(base, signalURL, id.PubB64, secret))
+	}
+
+	go watchKeys(ctx, cancel, onPair)
+	return srv.ServeSignal(ctx, signalURL, id, pinned, win)
+}
+
+// watchKeys reads single keystrokes from a terminal: P opens a pairing window,
+// Q/Ctrl-C cancels. If stdin is not a TTY (piped/tests), it just blocks on ctx.
+func watchKeys(ctx context.Context, cancel context.CancelFunc, onPair func()) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		<-ctx.Done()
+		return
+	}
+	old, err := term.MakeRaw(fd)
+	if err != nil {
+		<-ctx.Done()
+		return
+	}
+	defer term.Restore(fd, old)
+
+	buf := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			cancel()
+			return
+		}
+		switch buf[0] {
+		case 'p', 'P':
+			onPair()
+		case 'q', 'Q', 3: // 3 = Ctrl-C (raw mode delivers it as a byte)
+			cancel()
+			return
+		}
+	}
+}
+
+// runUnpair revokes a client by removing it from the pinned store.
+func runUnpair(argv []string) error {
+	fs := flag.NewFlagSet("unpair", flag.ExitOnError)
+	clientsPath := fs.String("clients", defaultStatePath("clients.json"), "path to the pinned-clients store")
+	_ = fs.Parse(argv)
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: simcastd unpair [--clients path] <clientPubKey>")
+	}
+	pinned, err := server.LoadPinnedStore(*clientsPath)
+	if err != nil {
+		return err
+	}
+	if err := pinned.Remove(fs.Arg(0)); err != nil {
+		return err
+	}
+	fmt.Printf("revoked %s\n", fs.Arg(0))
+	return nil
 }
 
 func runList() error {
