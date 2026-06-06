@@ -1,0 +1,8 @@
+[Unit]
+Description=simcast-signal auto-update (pull latest GitHub release)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/simcast-signal-update.sh

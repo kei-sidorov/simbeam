@@ -1,0 +1,22 @@
+[Unit]
+Description=simcast signaling broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=simcast
+Group=simcast
+EnvironmentFile=/etc/simcast/signal.env
+ExecStart=/usr/local/bin/simcast-signal $SIMCAST_SIGNAL_ARGS
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=simcast
+WorkingDirectory=/var/lib/simcast
+
+[Install]
+WantedBy=multi-user.target
