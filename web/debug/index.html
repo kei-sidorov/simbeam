@@ -185,7 +185,7 @@ async function applySubscription() {
 function refreshTurnIndicator(iceServers) {
   const hasTurn = (iceServers || []).some(s => {
     const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
-    return urls.some(u => String(u).startsWith('turn:'));
+    return urls.some(u => /^turns?:/.test(String(u))); // turn: or turns: (TLS)
   });
   document.getElementById('turnIndicator').textContent =
     'iceServers contain TURN: ' + (hasTurn ? 'YES (subscriber)' : 'no (STUN only)');
@@ -300,8 +300,14 @@ async function startRemoteSession(s) {
   dc.onmessage = (ev) => onCtrlReply(JSON.parse(ev.data));
 
   const onState = () => {
-    if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'disconnected')) {
-      scheduleReconnect();
+    if (!pc) return;
+    if (pc.connectionState === 'failed') {
+      // P2P could not be established (free tier has no relay) — retrying won't
+      // add one, so surface the upsell instead of looping silently.
+      showUpsell();
+      teardown();
+    } else if (pc.connectionState === 'disconnected') {
+      scheduleReconnect(); // transient drop — try to recover (Mac may return)
     }
   };
   pc.onconnectionstatechange = onState;
@@ -370,6 +376,10 @@ async function signal3C(s, gen) {
         minimizeBuffer(pc);
         if (s.save) {
           saveMac({signal: s.signal, daemon: s.daemon, daemonPub: s.daemonPub, name: s.name || 'Mac'});
+          // Enrolled now: drop the one-time secret so an unexpected drop
+          // auto-reconnects via the key-only path instead of being suppressed
+          // by scheduleReconnect's "don't auto-retry an enrollment" guard.
+          if (currentSession) currentSession.pair = null;
         }
         break;
       }

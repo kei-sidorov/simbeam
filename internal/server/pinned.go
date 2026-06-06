@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -31,6 +32,11 @@ func LoadPinnedStore(path string) (*PinnedStore, error) {
 			return ps, nil
 		}
 		return nil, err
+	}
+	// An empty file (fresh touch, or an interrupted save) means "no pins" — treat
+	// it as an empty store rather than a JSON parse error that bricks startup.
+	if len(bytes.TrimSpace(data)) == 0 {
+		return ps, nil
 	}
 	var list []PinnedClient
 	if err := json.Unmarshal(data, &list); err != nil {
@@ -66,7 +72,9 @@ func (ps *PinnedStore) Remove(pubKey string) error {
 	return ps.save()
 }
 
-// save writes the set atomically-ish (caller holds mu).
+// save writes the set atomically: a temp file in the same dir is fsync'd-by-OS
+// on rename, so a crash mid-write can never leave a truncated/empty clients.json
+// (which would otherwise lose every pin). Caller holds mu.
 func (ps *PinnedStore) save() error {
 	list := make([]PinnedClient, 0, len(ps.set))
 	for _, c := range ps.set {
@@ -76,8 +84,26 @@ func (ps *PinnedStore) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(ps.path), 0o700); err != nil {
+	dir := filepath.Dir(ps.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(ps.path, data, 0o600)
+	tmp, err := os.CreateTemp(dir, ".clients-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, ps.path)
 }

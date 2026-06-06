@@ -2,11 +2,12 @@ package server
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
+
+	"github.com/kei-sidorov/simcast/internal/signal"
 )
 
 // Identity is the daemon's long-lived Ed25519 keypair. PubB64 (base64 std) is
@@ -34,7 +35,7 @@ func LoadOrCreateIdentity(path string) (Identity, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return Identity{}, err
 	}
-	pub, priv, gerr := ed25519.GenerateKey(rand.Reader)
+	pubB64, priv, gerr := signal.GenerateKeyPair()
 	if gerr != nil {
 		return Identity{}, gerr
 	}
@@ -45,5 +46,5 @@ func LoadOrCreateIdentity(path string) (Identity, error) {
 	if werr := os.WriteFile(path, []byte(enc), 0o600); werr != nil {
 		return Identity{}, werr
 	}
-	return Identity{PubB64: base64.StdEncoding.EncodeToString(pub), Priv: priv}, nil
+	return Identity{PubB64: pubB64, Priv: priv}, nil
 }
