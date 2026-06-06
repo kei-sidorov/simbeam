@@ -23,6 +23,9 @@ import (
 	"golang.org/x/term"
 )
 
+// version is set at release time via -ldflags "-X main.version=...". "dev" otherwise.
+var version = "dev"
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -46,6 +49,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "version", "--version", "-v":
+		fmt.Println(version)
 	case "-h", "--help", "help":
 		usage(os.Stdout)
 	default:
@@ -62,6 +67,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  simcastd list    List available iOS simulators via idb_companion")
 	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
 	fmt.Fprintln(w, "  simcastd unpair  Revoke a paired client: simcastd unpair <clientPubKey>")
+	fmt.Fprintln(w, "  simcastd version Print the version")
 	fmt.Fprintln(w, "  simcastd help    Show this help")
 }
 

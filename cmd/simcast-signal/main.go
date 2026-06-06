@@ -18,7 +18,11 @@ import (
 	"github.com/kei-sidorov/simcast/internal/store"
 )
 
+// version is set at release time via -ldflags "-X main.version=...". "dev" otherwise.
+var version = "dev"
+
 func main() {
+	versionFlag := flag.Bool("version", false, "print version and exit")
 	addr := flag.String("addr", ":9000", "listen address")
 	stun := flag.String("stun", "stun:stun.l.google.com:19302", "comma-separated STUN URLs (handed to everyone)")
 	turn := flag.String("turn", "", "comma-separated TURN URLs (handed only to active subscribers)")
@@ -26,6 +30,11 @@ func main() {
 	turnTTL := flag.Duration("turn-ttl", time.Minute, "ephemeral TURN credential lifetime")
 	db := flag.String("db", "simcast.db", "SQLite path for the subscriptions store")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version)
+		return
+	}
 
 	st, err := store.OpenSQLite(*db)
 	if err != nil {
