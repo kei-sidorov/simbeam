@@ -1,0 +1,62 @@
+version: 2
+
+project_name: simcast
+
+builds:
+  - id: simcastd
+    main: ./cmd/simcastd
+    binary: simcastd
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin]
+    goarch: [arm64, amd64]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+  - id: simcast-signal
+    main: ./cmd/simcast-signal
+    binary: simcast-signal
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: simcastd
+    ids: [simcastd]
+    name_template: "simcastd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: simcast-signal
+    ids: [simcast-signal]
+    name_template: "simcast-signal_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+homebrew_casks:
+  - name: simcastd
+    ids: [simcastd]
+    repository:
+      owner: kei-sidorov
+      name: homebrew-simcast
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/kei-sidorov/simcast"
+    description: "simcast daemon — stream an iOS simulator from Mac to iPad"
+    dependencies:
+      - formula: idb-companion
+      - formula: ffmpeg
+    caveats: |
+      simcastd is shipped as an unsigned binary. The cask's post-install hook
+      strips the macOS quarantine attribute so Gatekeeper should not block it.
+      simcastd shells out to idb_companion (simulators) and ffmpeg (h264_videotoolbox).
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/simcastd"]
+          end
+
+release:
+  github:
+    owner: kei-sidorov
+    name: simcast
