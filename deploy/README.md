@@ -45,6 +45,10 @@ journalctl -u simcast-signal-update.service --no-pager | tail
 /usr/local/bin/simcast-signal-update.sh --dry-run   # manual check
 ```
 
+To ship a new server version, just push a git tag `vX.Y.Z` — the timer pulls it
+within ~10 min. Full operational runbook (timing, observing, failure modes,
+rollback, what does *not* auto-update): see [`UPDATING.md`](UPDATING.md).
+
 ## ICE entries the browser receives
 
 | Entry | When | Cost |
