@@ -3,7 +3,8 @@
 *.exe
 *.test
 *.out
-/dist/            # GoReleaser output
+# GoReleaser output
+/dist/
 
 # Locally-built command binaries (go build ./...)
 /simcastd
