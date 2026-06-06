@@ -10,8 +10,10 @@ builds:
       - CGO_ENABLED=0
     goos: [darwin]
     goarch: [arm64, amd64]
+    # Bake the broker so `simcastd serve` needs no flags. Pairing carries the rest
+    # in the URL; no page/Caddy hosting required.
     ldflags:
-      - -s -w -X main.version={{ .Version }}
+      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simcast.sidorov.tech/ws
   - id: simcast-signal
     main: ./cmd/simcast-signal
     binary: simcast-signal

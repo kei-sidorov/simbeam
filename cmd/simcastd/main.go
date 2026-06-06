@@ -29,6 +29,13 @@ import (
 // version is set at release time via -ldflags "-X main.version=...". "dev" otherwise.
 var version = "dev"
 
+// defaultSignalURL is the broker WS URL baked in at build time via -ldflags (see
+// .goreleaser.yaml / the Makefile `run-remote` target) so a distributed binary
+// runs `simcastd serve` with no flags. Empty in the open-core repo → the unbaked
+// build stays local-only. Pairing carries everything else in the URL itself, so
+// nothing server-side is needed beyond this broker.
+var defaultSignalURL = ""
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -87,7 +94,7 @@ func runServe(argv []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", ":8080", "listen address")
 	webDir := fs.String("web", "", "directory with debug client (served at /); empty = API only")
-	signalURL := fs.String("signal", "", "remote rendezvous: signaling broker WS URL (e.g. wss://host/ws); empty = local-only")
+	signalURL := fs.String("signal", defaultSignalURL, "remote rendezvous: signaling broker WS URL (e.g. wss://host/ws); empty = local-only")
 	clientURL := fs.String("client-url", "", "base URL of the browser debug client for the pairing link; empty = http://localhost<addr>/")
 	identityPath := fs.String("identity", defaultStatePath("identity.key"), "path to the daemon's persistent Ed25519 identity")
 	clientsPath := fs.String("clients", defaultStatePath("clients.json"), "path to the pinned-clients store")
