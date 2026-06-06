@@ -23,6 +23,12 @@
     <b>Account key:</b> <code id="pubkey">…</code>
     <button id="resetIdentity" title="new account for testing">reset</button>
   </div>
+  <div id="startPanel" style="margin:8px 0; padding:8px; border:1px solid #88f; border-radius:4px; font-size:13px;">
+    <b>App secret</b> (= server <code>SIMCAST_APP_SECRET</code>):
+    <input id="appSecretInput" size="44" placeholder="paste the server's SIMCAST_APP_SECRET" style="font-family:monospace;">
+    <button id="startBtn">Start</button>
+    <span id="startStatus"></span>
+  </div>
   <div id="macs" style="margin:8px 0;">
     <b>My Macs:</b>
     <div id="macList">none yet</div>
@@ -59,7 +65,9 @@ let pc = null, dc = null, sig = null;   // rtc path
 let startGen = 0;
 
 // ---- 3C: account identity (WebCrypto Ed25519, persisted in localStorage) ----
-const APP_SECRET = 'dev-app-secret'; // must equal the broker's SIMCAST_APP_SECRET in local dev
+// App secret — must equal the broker's SIMCAST_APP_SECRET. Entered in the Start
+// panel and persisted in localStorage so it survives reloads.
+let appSecret = localStorage.getItem('simcast_app_secret') || 'dev-app-secret';
 let clientPriv = null;               // CryptoKey (Ed25519 private, usage ['sign'])
 let clientPub = null;                // base64 (std) raw public key = account id
 
@@ -156,6 +164,32 @@ function setupSubscriptionPanel() {
   document.getElementById('subApply').onclick = applySubscription;
 }
 
+// setupStartPanel wires the app-secret input + Start button. Start persists the
+// secret (used to sign subscription POSTs) and kicks off the session: pair if the
+// URL carries a one-time pairing fragment, otherwise reconnect to the last saved Mac.
+function setupStartPanel() {
+  const input = document.getElementById('appSecretInput');
+  const status = document.getElementById('startStatus');
+  input.value = appSecret;
+  document.getElementById('startBtn').onclick = () => {
+    appSecret = input.value.trim();
+    localStorage.setItem('simcast_app_secret', appSecret);
+    const p = pairing();
+    if (p) {
+      status.textContent = ' ✓ secret saved — pairing…';
+      enroll(p);
+    } else {
+      const macs = loadMacs();
+      if (macs.length) {
+        status.textContent = ' ✓ secret saved — connecting to last Mac…';
+        connectRemote(macs[macs.length - 1]);
+      } else {
+        status.textContent = ' ✓ secret saved — open a pairing URL (press P in simcastd) to pair a Mac';
+      }
+    }
+  };
+}
+
 // applySubscription sends a REAL signed POST /v1/subscription (replaces StoreKit):
 // X-App-Sig = HMAC-SHA256(APP_SECRET, canonical); X-Account-Sig = Ed25519(client).
 async function applySubscription() {
@@ -168,7 +202,7 @@ async function applySubscription() {
   const issued = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 
   const canon = canonicalSub(clientPub, product, expires, issued);
-  const appSig = await hmacSha256B64(APP_SECRET, canon);
+  const appSig = await hmacSha256B64(appSecret, canon);
   const accSig = await signEd25519(canon);
 
   const resp = await fetch(base + '/v1/subscription', {
@@ -605,7 +639,7 @@ homeBtn.onclick = () => sendControl({type: 'home'});
   await loadOrCreateIdentity();
   renderIdentity();
   renderMacs();
-  setupPairButton();          // defined in Task 17
+  setupStartPanel();          // app-secret input + Start drives pairing/reconnect
   setupSubscriptionPanel();   // defined in Task 18
   if (mode === 'jpg') loadSimsREST();
 })();
