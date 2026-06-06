@@ -94,11 +94,18 @@ Homebrew-дистрибуцию, Postgres (через `Store`).
 
 ---
 
-## Phase 4 — Дистрибуция + прод-облако
+## Phase 4 — Дистрибуция + self-host
 
-- GoReleaser + Homebrew tap (`depends_on idb-companion`, `service` блок).
-- Деплой managed signaling + `coturn` в проде; защита signaling.
-- Аккаунты/биллинг (реальная проверка «подписчик?» вместо стаба из Phase 3).
+- **GoReleaser**: один пайплайн собирает `simcastd` (darwin arm64/amd64) и
+  `simcast-signal` (linux amd64) на тег `v*`.
+- **Homebrew tap** (`kei-sidorov/homebrew-simcast`): предсобранный неподписанный
+  `simcastd`, зависимости `idb-companion` + `ffmpeg`. Обновление — `brew upgrade`.
+- **Self-host сервера**: VPS + systemd, брокер + coturn за Caddy (авто-TLS).
+  **Pull-автообновление**: systemd timer тянет новый релиз из GitHub Releases,
+  проверяет checksum, атомарно подменяет бинарь, рестартит юнит. Ноль серверных
+  секретов в репо/CI; deploy-скаффолдинг генерик, секреты — на сервере.
+- **Серверную проверку чека Apple НЕ делаем** в этой фазе — подписки остаются
+  client-asserted (решение #62). Дизайн — `docs/superpowers/specs/2026-06-06-phase4-distribution-design.md`.
 
 ---
 

@@ -82,6 +82,18 @@ simcast/
 - **`ffmpeg`** с энкодером `h264_videotoolbox`: `brew install ffmpeg` (нужен для WebRTC-режима — кодирует кадры в H.264).
 - **Go** (для разработки демона).
 
+## Install (Homebrew)
+
+Install the macOS daemon from the tap (pulls `idb-companion` and `ffmpeg` as deps):
+
+```bash
+brew install kei-sidorov/simcast/simcastd
+simcastd version
+```
+
+Update later with `brew upgrade`. To self-host the signalling server (broker + TURN
+with auto-update), see `deploy/README.md`.
+
 ## Запуск
 
 Нужен установленный Go (`brew install go`) и `idb_companion` в PATH.
