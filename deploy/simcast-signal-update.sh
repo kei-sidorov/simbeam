@@ -16,8 +16,13 @@ DRY_RUN=0
 
 log() { echo "simcast-update: $*"; }
 
-latest_tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-  | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+# Fetch the whole API response into a var FIRST, then parse it. Do not pipe curl
+# straight into `grep -m1`: grep closes the pipe after the first match while curl
+# is still writing the (large) JSON body, so curl dies with "failure writing
+# output" (exit 23) and `set -o pipefail` aborts the script. That race passes
+# intermittently (small/fast responses) but fails reliably under the timer.
+api_json="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")"
+latest_tag="$(grep -m1 '"tag_name"' <<<"${api_json}" | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
 if [ -z "${latest_tag}" ]; then log "could not resolve latest release tag"; exit 1; fi
 
 current="dev"
