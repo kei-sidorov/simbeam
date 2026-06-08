@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -122,7 +123,7 @@ func runServe(argv []string) error {
 // runRemote loads the daemon's persistent identity + pinned clients, serves the
 // debug client locally (so the browser can load it), connects persistently to the
 // broker under daemonID, and watches the terminal: press P to open a one-time
-// enrollment window (prints the pairing URL), Q/Ctrl-C to quit.
+// enrollment window (prints a QR + URL), C to cancel it, Q/Ctrl-C to quit.
 func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityPath, clientsPath string, pairTTL time.Duration) error {
 	id, err := server.LoadOrCreateIdentity(identityPath)
 	if err != nil {
@@ -155,7 +156,9 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 
 	fmt.Printf("simcastd remote mode — broker: %s\n", signalURL)
 	fmt.Printf("daemonID: %s\n", id.PubB64)
-	fmt.Println("Press P to pair a new device (opens a one-time window). Press Q to quit.")
+	fmt.Println("Press P to pair a new device, C to cancel an open window, Q to quit.")
+
+	ui := &pairUI{}
 
 	onPair := func() {
 		secret, serr := signal.NewPairingSecret()
@@ -165,22 +168,30 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 		}
 		win.Open(secret, time.Now(), pairTTL)
 		pairURL := signal.PairingURL(base, signalURL, id.PubB64, secret)
-		fmt.Printf("\r\nPair this device (window open %s) — scan with the iPad camera,\r\nor open the URL below:\r\n\r\n", pairTTL)
-		printPairingQR(os.Stdout, pairURL)
-		fmt.Printf("\r\n  %s\r\n", pairURL)
+		block, rows := renderPairBlock(pairURL, pairTTL)
+		ui.show(block, rows, pairTTL, func() {
+			// TTL fired: the secret is dead — disarm and grey out the on-screen code.
+			win.Close()
+			ui.retire(ansiFaint + "⏲  pairing window EXPIRED — code above is dead" + ansiReset)
+		})
 	}
 
-	// Confirm in the terminal when a new device finishes pairing: the single-use
-	// window is now consumed, so the QR still on screen is spent (CRLF for raw TTY).
+	onCancel := func() {
+		win.Close()
+		ui.retire(ansiRed + "✗  pairing CANCELLED — code above is dead" + ansiReset)
+	}
+
+	// When a new device finishes pairing, the single-use window is consumed: grey
+	// out the QR still on screen and confirm with the client's key.
 	srv.OnEnroll(func(clientPubKey string) {
 		short := clientPubKey
 		if len(short) > 16 {
 			short = short[:16]
 		}
-		fmt.Printf("\r\n✓ paired %s… — enrollment window closed (the QR above is now spent)\r\n", short)
+		ui.retire(ansiGreen + "✓  paired " + short + "… — enrollment window closed" + ansiReset)
 	})
 
-	go watchKeys(ctx, cancel, onPair)
+	go watchKeys(ctx, cancel, onPair, onCancel)
 	return srv.ServeSignal(ctx, signalURL, id, pinned, win)
 }
 
@@ -214,9 +225,78 @@ func (c *crlfWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// ANSI SGR codes for greying out / colouring the retired pairing block.
+const (
+	ansiReset = "\x1b[0m"
+	ansiFaint = "\x1b[2m"
+	ansiRed   = "\x1b[31m"
+	ansiGreen = "\x1b[32m"
+)
+
+// renderPairBlock builds the on-screen pairing block (header + QR + URL) as a
+// single CRLF string and reports how many terminal rows it occupies, so pairUI
+// can later move the cursor back over exactly this block to grey it out.
+func renderPairBlock(pairURL string, ttl time.Duration) (block string, rows int) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\r\nPair this device (window open %s) — scan with the iPad camera,\r\nor open the URL below:\r\n\r\n", ttl)
+	printPairingQR(&b, pairURL)
+	fmt.Fprintf(&b, "\r\n  %s\r\n", pairURL)
+	s := b.String()
+	return s, strings.Count(s, "\n")
+}
+
+// pairUI tracks the pairing block currently on screen so it can be redrawn faint
+// (with a coloured status line) when the window is cancelled, expires, or is
+// consumed. Best-effort: retire() repositions the cursor up over the block, which
+// assumes nothing else printed in between and the block did not scroll off-screen.
+type pairUI struct {
+	mu     sync.Mutex
+	block  string // rendered block, CRLF, no colour
+	rows   int    // terminal rows it occupies
+	active bool
+	timer  *time.Timer
+}
+
+// show prints a freshly-rendered pairing block and arms a TTL timer that calls
+// onExpire. Any previously-armed window is superseded.
+func (u *pairUI) show(block string, rows int, ttl time.Duration, onExpire func()) {
+	u.mu.Lock()
+	if u.timer != nil {
+		u.timer.Stop()
+	}
+	u.block, u.rows, u.active = block, rows, true
+	u.timer = time.AfterFunc(ttl, onExpire)
+	u.mu.Unlock()
+	fmt.Fprint(os.Stdout, block)
+}
+
+// retire greys out the on-screen block (if still active) and prints status below
+// it. No-op if the block was already retired, so cancel/expire/enroll racing each
+// other only ever redraw once.
+func (u *pairUI) retire(status string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !u.active {
+		return
+	}
+	u.active = false
+	if u.timer != nil {
+		u.timer.Stop()
+		u.timer = nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\x1b[%dA\r", u.rows) // up to the first line of the block, column 0
+	b.WriteString(ansiFaint)
+	b.WriteString(u.block) // same content, now dimmed
+	b.WriteString(ansiReset)
+	fmt.Fprintf(&b, "%s\x1b[K\r\n", status)
+	fmt.Fprint(os.Stdout, b.String())
+}
+
 // watchKeys reads single keystrokes from a terminal: P opens a pairing window,
-// Q/Ctrl-C cancels. If stdin is not a TTY (piped/tests), it just blocks on ctx.
-func watchKeys(ctx context.Context, cancel context.CancelFunc, onPair func()) {
+// C cancels an open one, Q/Ctrl-C quits. If stdin is not a TTY (piped/tests), it
+// just blocks on ctx.
+func watchKeys(ctx context.Context, cancel context.CancelFunc, onPair, onCancel func()) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
 		<-ctx.Done()
@@ -239,6 +319,8 @@ func watchKeys(ctx context.Context, cancel context.CancelFunc, onPair func()) {
 		switch buf[0] {
 		case 'p', 'P':
 			onPair()
+		case 'c', 'C':
+			onCancel()
 		case 'q', 'Q', 3: // 3 = Ctrl-C (raw mode delivers it as a byte)
 			cancel()
 			return

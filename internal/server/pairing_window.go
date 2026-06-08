@@ -45,6 +45,15 @@ func (p *pairingWindow) verify(clientPubKey, nonce, proof string, now time.Time)
 	return true
 }
 
+// Close disarms the window immediately (manual cancel): the secret is cleared so
+// any in-flight or replayed proof is rejected. Idempotent.
+func (p *pairingWindow) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.secret = ""
+	p.used = true
+}
+
 // NewPairingWindow returns a closed pairing window the daemon arms on demand.
 func NewPairingWindow() *pairingWindow { return &pairingWindow{} }
 
