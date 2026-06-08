@@ -352,11 +352,11 @@ func runList() error {
 	defer cancel()
 
 	c := companion.New()
-	path, err := c.Resolve()
-	if err != nil {
-		return err
-	}
-	if v, err := c.Version(ctx); err == nil {
+	// Listing uses simctl and no longer needs idb_companion; only report idb's
+	// status (it is still required for streaming) instead of failing without it.
+	if path, err := c.Resolve(); err != nil {
+		fmt.Printf("idb_companion: not found (required for streaming, not for list)\n\n")
+	} else if v, err := c.Version(ctx); err == nil {
 		fmt.Printf("idb_companion: %s (built %s)\n\n", path, v)
 	} else {
 		fmt.Printf("idb_companion: %s\n\n", path)

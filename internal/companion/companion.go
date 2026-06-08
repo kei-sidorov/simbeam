@@ -1,23 +1,28 @@
-// Package companion is a thin wrapper around the idb_companion CLI binary
-// (Meta's idb, MIT). simcast does not reimplement CoreSimulator or the video
-// pipeline — it shells out to idb_companion and parses its output.
+// Package companion drives the iOS Simulator lifecycle for simcast.
 //
-// On this Phase, only the lifecycle CLI surface is used (--version, --list).
-// The gRPC surface (describe / video_stream / hid) is wired up in Phase 1.
+// Simulator enumeration and boot use Apple's own `xcrun simctl` — there is no
+// reason to route those through a third-party binary. idb_companion (Meta's idb,
+// MIT) is still required for the streaming pipeline (the gRPC describe /
+// screenshot / hid surface, wired up in internal/idb); Resolve/Version exist to
+// confirm it is installed.
 package companion
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
 // DefaultBinary is the idb_companion executable name resolved against PATH.
 const DefaultBinary = "idb_companion"
+
+// DefaultSimctl is the launcher used to reach simctl. `xcrun simctl <args>`
+// resolves the active toolchain's simctl, so no absolute path is needed.
+const DefaultSimctl = "xcrun"
 
 // Simulator is one iOS Simulator target as reported by `idb_companion --list 1`.
 // Fields mirror the JSON keys emitted by idb_companion v1.1.8.
@@ -45,21 +50,33 @@ func (v Version) String() string {
 	return strings.TrimSpace(v.BuildDate + " " + v.BuildTime)
 }
 
-// Client wraps the idb_companion binary.
+// Client drives simulator lifecycle (via simctl) and confirms idb_companion
+// is present (for the streaming pipeline).
 type Client struct {
 	// Binary is the path or name of the idb_companion executable. Empty means
 	// DefaultBinary resolved against PATH.
 	Binary string
+	// Simctl is the launcher used for List/Boot. Empty means DefaultSimctl
+	// ("xcrun"). Overridable in tests.
+	Simctl string
 }
 
-// New returns a Client that resolves idb_companion from PATH.
-func New() *Client { return &Client{Binary: DefaultBinary} }
+// New returns a Client that resolves idb_companion from PATH and reaches
+// simctl via xcrun.
+func New() *Client { return &Client{Binary: DefaultBinary, Simctl: DefaultSimctl} }
 
 func (c *Client) binary() string {
 	if c.Binary == "" {
 		return DefaultBinary
 	}
 	return c.Binary
+}
+
+func (c *Client) simctl() string {
+	if c.Simctl == "" {
+		return DefaultSimctl
+	}
+	return c.Simctl
 }
 
 // Resolve returns the absolute path to the idb_companion binary, or an error
@@ -93,51 +110,107 @@ func (c *Client) Version(ctx context.Context) (Version, error) {
 	return Version{}, fmt.Errorf("could not parse version from idb_companion output")
 }
 
-// List runs `idb_companion --list 1` and returns the available simulators.
-//
-// idb_companion interleaves JSON device lines with human-readable diagnostic
-// lines on stdout, so we parse line-by-line and keep only lines that unmarshal
-// into a Simulator with a UDID. Real (non-simulator) devices are filtered out —
-// simcast is scoped to simulators only.
+// List runs `xcrun simctl list -j devices available` and returns the available
+// simulators. simctl reports only simulators (never real devices), so no
+// device-type filtering is needed; unavailable runtimes are excluded by the
+// `available` argument and double-checked via isAvailable.
 func (c *Client) List(ctx context.Context) ([]Simulator, error) {
-	out, err := c.run(ctx, "--list", "1")
+	out, err := c.runSimctl(ctx, "list", "-j", "devices", "available")
 	if err != nil {
 		return nil, err
 	}
+	return parseSimctlDevices(out)
+}
+
+// simctlList mirrors the shape of `simctl list -j devices`: devices keyed by
+// runtime identifier (e.g. "com.apple.CoreSimulator.SimRuntime.iOS-26-4").
+type simctlList struct {
+	Devices map[string][]simctlDevice `json:"devices"`
+}
+
+type simctlDevice struct {
+	UDID                 string `json:"udid"`
+	Name                 string `json:"name"`
+	State                string `json:"state"`
+	IsAvailable          bool   `json:"isAvailable"`
+	DeviceTypeIdentifier string `json:"deviceTypeIdentifier"`
+}
+
+// parseSimctlDevices maps simctl's runtime-keyed JSON into a flat, deterministically
+// ordered []Simulator. Map iteration order in Go is random, so results are sorted
+// to keep the device list stable between calls.
+func parseSimctlDevices(out []byte) ([]Simulator, error) {
+	var parsed simctlList
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return nil, fmt.Errorf("parsing simctl device list: %w", err)
+	}
 
 	var sims []Simulator
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "{") {
-			continue
+	for runtime, devices := range parsed.Devices {
+		osVersion := osVersionFromRuntime(runtime)
+		for _, d := range devices {
+			if d.UDID == "" || !d.IsAvailable {
+				continue
+			}
+			sims = append(sims, Simulator{
+				UDID:      d.UDID,
+				Name:      d.Name,
+				Model:     modelFromDeviceType(d.DeviceTypeIdentifier),
+				OSVersion: osVersion,
+				State:     d.State,
+				Type:      "Simulator",
+			})
 		}
-		var s Simulator
-		if err := json.Unmarshal([]byte(line), &s); err != nil {
-			continue // diagnostic or otherwise non-device JSON line
-		}
-		if s.UDID == "" {
-			continue
-		}
-		if s.Type != "" && !strings.EqualFold(s.Type, "Simulator") {
-			continue // scope: simulators only
-		}
-		sims = append(sims, s)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading idb_companion output: %w", err)
-	}
+	sort.Slice(sims, func(i, j int) bool {
+		if sims[i].Name != sims[j].Name {
+			return sims[i].Name < sims[j].Name
+		}
+		if sims[i].OSVersion != sims[j].OSVersion {
+			return sims[i].OSVersion < sims[j].OSVersion
+		}
+		return sims[i].UDID < sims[j].UDID
+	})
 	return sims, nil
 }
 
-// Boot boots the simulator with the given UDID via `idb_companion --boot <udid>`.
-// idb_companion blocks until the simulator reaches a known-booted state
-// (--verify-booted defaults to true). Booting an already-booted simulator is
-// effectively a no-op.
+// osVersionFromRuntime turns a runtime identifier like
+// "com.apple.CoreSimulator.SimRuntime.iOS-26-4" into "26.4". The platform
+// prefix is dropped to match the bare version string idb reported.
+func osVersionFromRuntime(runtime string) string {
+	const prefix = "com.apple.CoreSimulator.SimRuntime."
+	id := strings.TrimPrefix(runtime, prefix)
+	// id is e.g. "iOS-26-4"; strip the leading platform token, join the rest.
+	parts := strings.Split(id, "-")
+	if len(parts) <= 1 {
+		return id
+	}
+	return strings.Join(parts[1:], ".")
+}
+
+// modelFromDeviceType turns a device-type identifier like
+// "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" into "iPhone 17 Pro".
+func modelFromDeviceType(id string) string {
+	const prefix = "com.apple.CoreSimulator.SimDeviceType."
+	name := strings.TrimPrefix(id, prefix)
+	return strings.ReplaceAll(name, "-", " ")
+}
+
+// Boot boots the simulator with the given UDID via `xcrun simctl boot <udid>`.
+// Booting an already-booted simulator is treated as success (a no-op), matching
+// idb's --verify-booted behavior; simctl instead exits non-zero with a
+// "current state: Booted" message that we recognize and swallow.
 func (c *Client) Boot(ctx context.Context, udid string) error {
-	if _, err := c.run(ctx, "--boot", udid); err != nil {
-		return err
+	_, stderr, err := c.execSimctl(ctx, "boot", udid)
+	if err != nil {
+		if strings.Contains(stderr, "current state: Booted") {
+			return nil // already booted — no-op
+		}
+		msg := strings.TrimSpace(stderr)
+		if msg != "" {
+			return fmt.Errorf("simctl boot %s: %w: %s", udid, err, msg)
+		}
+		return fmt.Errorf("simctl boot %s: %w", udid, err)
 	}
 	return nil
 }
@@ -158,4 +231,30 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("idb_companion %s: %w", strings.Join(args, " "), err)
 	}
 	return stdout.Bytes(), nil
+}
+
+// runSimctl executes `<simctl-launcher> simctl <args>` and returns stdout,
+// surfacing stderr only on failure.
+func (c *Client) runSimctl(ctx context.Context, args ...string) ([]byte, error) {
+	stdout, stderr, err := c.execSimctl(ctx, args...)
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
+		if msg != "" {
+			return nil, fmt.Errorf("simctl %s: %w: %s", strings.Join(args, " "), err, msg)
+		}
+		return nil, fmt.Errorf("simctl %s: %w", strings.Join(args, " "), err)
+	}
+	return []byte(stdout), nil
+}
+
+// execSimctl runs `<simctl-launcher> simctl <args>` and returns stdout, stderr
+// and the run error separately, so callers can inspect stderr (e.g. Boot's
+// already-booted check) before deciding whether the error is fatal.
+func (c *Client) execSimctl(ctx context.Context, args ...string) (stdout, stderr string, err error) {
+	cmd := exec.CommandContext(ctx, c.simctl(), append([]string{"simctl"}, args...)...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return outBuf.String(), errBuf.String(), err
 }
