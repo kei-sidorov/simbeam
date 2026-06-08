@@ -28,13 +28,17 @@ func brokerFixture(t *testing.T, cfg signalbroker.Config) string {
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
 }
 
-// startDaemon runs a stub-Companion daemon's ServeSignal against wsURL.
-func startDaemon(t *testing.T, ctx context.Context, wsURL string, id Identity, pinned *PinnedStore, win *pairingWindow) {
+// startDaemon runs a stub-Companion daemon's ServeSignal against wsURL. Optional
+// opts configure the Server (e.g. OnEnroll) before the serve goroutine starts.
+func startDaemon(t *testing.T, ctx context.Context, wsURL string, id Identity, pinned *PinnedStore, win *pairingWindow, opts ...func(*Server)) {
 	t.Helper()
 	dsrv := New(&stubComp{sims: []companion.Simulator{
 		{UDID: "A", Name: "iPhone", State: "Booted", OSVersion: "17.0"},
 		{UDID: "B", Name: "iPad", State: "Shutdown", OSVersion: "17.0"},
 	}}, "")
+	for _, o := range opts {
+		o(dsrv)
+	}
 	go func() { _ = dsrv.ServeSignal(ctx, wsURL, id, pinned, win) }()
 }
 
@@ -206,7 +210,10 @@ func TestEnrollmentEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	startDaemon(t, ctx, wsURL, id, pinned, win)
+	enrolled := make(chan string, 1)
+	startDaemon(t, ctx, wsURL, id, pinned, win, func(s *Server) {
+		s.OnEnroll(func(pub string) { enrolled <- pub })
+	})
 
 	clientPub, clientPriv, _ := signal.GenerateKeyPair()
 	pc, replies := newOfferer(t)
@@ -218,6 +225,16 @@ func TestEnrollmentEndToEnd(t *testing.T) {
 
 	if !pinned.Contains(clientPub) {
 		t.Fatalf("client was not pinned after enrollment")
+	}
+
+	// The OnEnroll callback must fire exactly once, with the enrolled client's key.
+	select {
+	case got := <-enrolled:
+		if got != clientPub {
+			t.Fatalf("OnEnroll fired with %q, want enrolled client %q", got, clientPub)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("OnEnroll never fired on enrollment")
 	}
 }
 

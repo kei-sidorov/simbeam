@@ -170,6 +170,16 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 		fmt.Printf("\r\n  %s\r\n", pairURL)
 	}
 
+	// Confirm in the terminal when a new device finishes pairing: the single-use
+	// window is now consumed, so the QR still on screen is spent (CRLF for raw TTY).
+	srv.OnEnroll(func(clientPubKey string) {
+		short := clientPubKey
+		if len(short) > 16 {
+			short = short[:16]
+		}
+		fmt.Printf("\r\n✓ paired %s… — enrollment window closed (the QR above is now spent)\r\n", short)
+	})
+
 	go watchKeys(ctx, cancel, onPair)
 	return srv.ServeSignal(ctx, signalURL, id, pinned, win)
 }

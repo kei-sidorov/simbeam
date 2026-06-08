@@ -154,6 +154,9 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 			}
 			if enrolling {
 				_ = pinned.Add(authPub, "")
+				if s.onEnroll != nil {
+					s.onEnroll(authPub)
+				}
 			}
 			authed = true
 		case signal.TypeOffer:

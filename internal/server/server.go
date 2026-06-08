@@ -18,9 +18,10 @@ type Companion interface {
 
 // Server wires HTTP handlers over a Companion plus the idb_companion binary path.
 type Server struct {
-	comp   Companion
-	binary string // path to idb_companion for sidecars; "" → "idb_companion"
-	webDir string // static debug client dir; "" → not served
+	comp     Companion
+	binary   string                    // path to idb_companion for sidecars; "" → "idb_companion"
+	webDir   string                    // static debug client dir; "" → not served
+	onEnroll func(clientPubKey string) // fired when a new client enrolls via the pairing window; nil → no-op
 }
 
 // New creates a Server. webDir is served at / when non-empty.
@@ -30,6 +31,11 @@ func New(comp Companion, webDir string) *Server {
 
 // WithBinary overrides the idb_companion path used for sidecars.
 func (s *Server) WithBinary(bin string) *Server { s.binary = bin; return s }
+
+// OnEnroll registers a callback fired (with the client's public key) the moment a
+// not-yet-pinned client completes pairing — i.e. the single-use window was just
+// consumed. Used by the daemon to print confirmation to the terminal.
+func (s *Server) OnEnroll(fn func(clientPubKey string)) *Server { s.onEnroll = fn; return s }
 
 // Handler returns the configured HTTP handler.
 func (s *Server) Handler() http.Handler {
