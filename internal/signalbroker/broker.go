@@ -35,10 +35,11 @@ type Config struct {
 
 // Broker holds live daemon presence.
 type Broker struct {
-	cfg     Config
-	up      websocket.Upgrader
-	mu      sync.Mutex
-	daemons map[string]*daemonConn // daemonID → registered daemon
+	cfg      Config
+	up       websocket.Upgrader
+	mu       sync.Mutex
+	daemons  map[string]*daemonConn // daemonID → registered daemon
+	watchers map[*watcher]struct{}  // presence subscribers (guarded by mu, same as daemons)
 }
 
 // conn serializes writes to one websocket (gorilla forbids concurrent writers).
@@ -77,9 +78,10 @@ func New(cfg Config) *Broker {
 		cfg.Now = time.Now
 	}
 	return &Broker{
-		cfg:     cfg,
-		up:      websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
-		daemons: map[string]*daemonConn{},
+		cfg:      cfg,
+		up:       websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
+		daemons:  map[string]*daemonConn{},
+		watchers: map[*watcher]struct{}{},
 	}
 }
 
@@ -129,6 +131,8 @@ func (b *Broker) handleWS(w http.ResponseWriter, r *http.Request) {
 		b.serveDaemon(c, first)
 	case signal.TypeJoin:
 		b.serveClient(c, first)
+	case signal.TypeWatch:
+		b.serveWatcher(c, first)
 	default:
 		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "first message must be register or join"})
 	}
@@ -146,13 +150,23 @@ func (b *Broker) serveDaemon(c *conn, reg signal.Msg) {
 	b.mu.Lock()
 	b.daemons[id] = d // a re-register (after reconnect) overwrites the stale slot
 	b.mu.Unlock()
+	b.notifyPresence(id, true)
+
+	// Ping/pong liveness: catches a half-open TCP from a hard Mac sleep that a
+	// clean close (handled by the read loop below) would not.
+	stopKA := keepalive(c)
+	defer stopKA()
 
 	defer func() {
 		b.mu.Lock()
-		if b.daemons[id] == d {
+		removed := b.daemons[id] == d
+		if removed {
 			delete(b.daemons, id)
 		}
 		b.mu.Unlock()
+		if removed { // a re-register stole the slot → its goroutine owns presence
+			b.notifyPresence(id, false)
+		}
 		d.mu.Lock()
 		cl := d.client
 		d.mu.Unlock()
