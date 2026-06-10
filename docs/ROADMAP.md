@@ -6,7 +6,7 @@
 
 ---
 
-## Phase 0 — Bootstrap ⬅️ начинаем здесь
+## Phase 0 — Bootstrap — done
 
 **Цель:** доказать сквозную связку «наш Go-код → `idb_companion` → реальные симуляторы».
 Это «hello world», который проверяет всю фундаментальную цепочку.
@@ -35,7 +35,7 @@ go run ./cmd/simcastd list
 
 ---
 
-## Phase 1 — JPEG MVP (видно симулятор на «клиенте»)
+## Phase 1 — JPEG MVP (видно симулятор на «клиенте») — done
 
 **Цель:** самый дешёвый сквозной стрим без WebRTC, чтобы увидеть картинку и проверить ввод.
 
@@ -50,7 +50,7 @@ go run ./cmd/simcastd list
 
 ---
 
-## Phase 2 — WebRTC (низкая задержка)
+## Phase 2 — WebRTC (низкая задержка) — done
 
 - pion: `TrackLocalStaticSample`, H.264 из `video_stream` в трек без энкодинга.
 - Signaling (минимальный WSS): offer/answer/ICE.
@@ -61,7 +61,7 @@ go run ./cmd/simcastd list
 
 ---
 
-## Phase 3 — Удалёнка / рандеву-сервер
+## Phase 3 — Удалёнка / рандеву-сервер — done
 
 Полный дизайн — `docs/superpowers/specs/2026-06-03-phase4-remote-access-design.md`
 (имя файла историческое — это контент нынешней Phase 3).
@@ -94,7 +94,7 @@ Homebrew-дистрибуцию, Postgres (через `Store`).
 
 ---
 
-## Phase 4 — Дистрибуция + self-host
+## Phase 4 — Дистрибуция + self-host — done
 
 - **GoReleaser**: один пайплайн собирает `simcastd` (darwin arm64/amd64) и
   `simcast-signal` (linux amd64) на тег `v*`.
