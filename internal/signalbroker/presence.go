@@ -29,6 +29,13 @@ type watcher struct {
 func (c *conn) sendPresence(m signal.Msg) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	return c.writePresenceLocked(m)
+}
+
+// writePresenceLocked writes a presence frame bounded by a deadline; the caller
+// must already hold c.wmu (serveWatcher holds it across the b.mu release to order
+// the snapshot ahead of any delta without pinning the global lock during I/O).
+func (c *conn) writePresenceLocked(m signal.Msg) error {
 	_ = c.ws.SetWriteDeadline(time.Now().Add(presenceWriteTimeout))
 	err := c.ws.WriteJSON(m)
 	_ = c.ws.SetWriteDeadline(time.Time{})
@@ -37,17 +44,22 @@ func (c *conn) sendPresence(m signal.Msg) error {
 
 // serveWatcher registers a watcher, emits its snapshot, then reads until close.
 //
-// Registration AND the snapshot write happen under the SAME b.mu that guards
-// b.daemons. This closes two races at once:
+// Registration and the snapshot computation happen under the SAME b.mu that
+// guards b.daemons. This closes two races at once:
 //  1. a daemon registering between snapshot and registration would lose its
 //     delta (the dot would stay stale forever);
 //  2. a delta racing ahead of the snapshot on the socket could overwrite a fresh
 //     true with a stale false.
 //
-// Holding b.mu across the snapshot write orders it strictly before any
-// notifyPresence delta, because notifyPresence must re-acquire b.mu to find this
-// watcher. The write is bounded by a deadline and the conn is freshly accepted,
-// so the lock hold is brief.
+// We take this conn's write lock (c.wmu) BEFORE releasing b.mu, then send the
+// snapshot after the release. That orders the snapshot strictly before any
+// notifyPresence delta — notifyPresence can only target this watcher after it
+// scans b.watchers (populated under b.mu), and its delta send blocks on the same
+// c.wmu until the snapshot write completes — WITHOUT holding the global b.mu
+// across the network write. (Holding b.mu over a write would let one stalled
+// watcher freeze every daemon register/drop and join broker-wide.) c.wmu is
+// uncontended here: the conn is brand new and only reachable via b.watchers,
+// which we just populated under the lock we still hold.
 func (b *Broker) serveWatcher(c *conn, first signal.Msg) {
 	w := &watcher{c: c, ids: make(map[string]bool, len(first.Daemons))}
 	for _, id := range first.Daemons {
@@ -60,8 +72,10 @@ func (b *Broker) serveWatcher(c *conn, first signal.Msg) {
 	for id := range w.ids {
 		snap[id] = b.daemons[id] != nil
 	}
-	_ = c.sendPresence(signal.Msg{Type: signal.TypePresence, States: snap})
+	c.wmu.Lock()
 	b.mu.Unlock()
+	_ = c.writePresenceLocked(signal.Msg{Type: signal.TypePresence, States: snap})
+	c.wmu.Unlock()
 
 	defer func() {
 		b.mu.Lock()

@@ -74,6 +74,30 @@ func TestPresenceDeltaOnDaemonDisconnect(t *testing.T) {
 	}
 }
 
+// Two watchers on the same daemon each get the register delta (fan-out).
+func TestPresenceFanOutToMultipleWatchers(t *testing.T) {
+	b := New(Config{STUNURLs: []string{"stun:x"}})
+	srv := httptest.NewServer(b.Handler())
+	defer srv.Close()
+	url := wsURL(t, srv)
+
+	w1 := dial(t, url)
+	watch(t, w1, "D")
+	_ = readMsg(t, w1) // snapshot {D:false}
+	w2 := dial(t, url)
+	watch(t, w2, "D")
+	_ = readMsg(t, w2) // snapshot {D:false}
+
+	daemon := dial(t, url)
+	registerDaemon(t, daemon, "D")
+
+	for i, w := range []*websocket.Conn{w1, w2} {
+		if m := readMsg(t, w); m.Type != signal.TypePresence || m.States["D"] != true {
+			t.Fatalf("watcher %d want delta {D:true}, got %+v", i, m)
+		}
+	}
+}
+
 // No gap: a watcher subscribing BEFORE the daemon gets a false snapshot, then the
 // true delta when the daemon registers — the delta is never lost.
 func TestPresenceNoGapSubscribeBeforeDaemon(t *testing.T) {

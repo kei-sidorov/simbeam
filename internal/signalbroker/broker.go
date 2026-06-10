@@ -134,7 +134,7 @@ func (b *Broker) handleWS(w http.ResponseWriter, r *http.Request) {
 	case signal.TypeWatch:
 		b.serveWatcher(c, first)
 	default:
-		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "first message must be register or join"})
+		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "first message must be register, join, or watch"})
 	}
 }
 
