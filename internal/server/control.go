@@ -9,8 +9,8 @@ import (
 	"github.com/kei-sidorov/simcast/internal/idb"
 )
 
-// controlMsg is an inbound message from the client — over the JPEG /session
-// WebSocket or the WebRTC "control" DataChannel.
+// controlMsg is an inbound message from the client — over the WebRTC "control"
+// DataChannel.
 type controlMsg struct {
 	Type     string  `json:"type"` // tap|home|swipe|key|list|boot|attach|detach
 	UDID     string  `json:"udid"` // boot, attach
@@ -25,8 +25,7 @@ type controlMsg struct {
 }
 
 // applyControl dispatches one parsed control message to the idb client, scaling
-// touch coordinates against the simulator screen. Shared by the JPEG WS session
-// and the WebRTC DataChannel so input handling lives in exactly one place.
+// touch coordinates against the simulator screen.
 func applyControl(ctx context.Context, client *idb.Client, screen idb.Screen, m controlMsg) {
 	switch m.Type {
 	case "tap":

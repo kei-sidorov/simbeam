@@ -6,19 +6,12 @@
   <style>
     body { font-family: -apple-system, sans-serif; margin: 16px; }
     #sims button { display: block; margin: 4px 0; }
-    #modes { margin: 8px 0; }
-    #modes button.active { font-weight: bold; text-decoration: underline; }
     .surface { border: 1px solid #ccc; max-height: 80vh; cursor: crosshair; display: none; touch-action: none; }
     #home { margin-top: 8px; display: none; }
     #hint { margin-top: 6px; font-size: 12px; color: #666; display: none; }
   </style>
 </head>
 <body>
-  <div id="modes">
-    Mode:
-    <button id="modeRtc" class="active">RTC</button>
-    <button id="modeJpg">JPG</button>
-  </div>
   <div id="identity" style="margin:8px 0; padding:8px; border:1px solid #eee; font-size:13px;">
     <b>Account key:</b> <code id="pubkey">…</code>
     <button id="resetIdentity" title="new account for testing">reset</button>
@@ -44,23 +37,17 @@
   <div id="turnIndicator" style="margin:8px 0; font-size:13px;"></div>
   <h3>Simulators</h3>
   <div id="sims">loading…</div>
-  <img id="screenImg" class="surface" alt="simulator">
   <video id="screenVid" class="surface" autoplay playsinline muted></video>
   <div id="hint">Click&nbsp;= tap · drag&nbsp;= swipe · keys typed here go to the device</div>
   <div><button id="home">Home</button></div>
 
 <script>
 const simsEl = document.getElementById('sims');
-const imgEl = document.getElementById('screenImg');
 const vidEl = document.getElementById('screenVid');
 const homeBtn = document.getElementById('home');
 const hintEl = document.getElementById('hint');
-const modeRtcBtn = document.getElementById('modeRtc');
-const modeJpgBtn = document.getElementById('modeJpg');
 
-let mode = 'rtc';
 let currentUDID = null;
-let ws = null;                          // jpg path
 let pc = null, dc = null, sig = null;   // rtc path
 let startGen = 0;
 
@@ -247,16 +234,14 @@ function connectRemote(mac) {
   startRemoteSession({signal: mac.signal, daemon: mac.daemon, daemonPub: mac.daemonPub, pair: null, save: false, name: mac.name});
 }
 
-function surface() { return mode === 'rtc' ? vidEl : imgEl; }
+function surface() { return vidEl; }
 
 function teardown() {
   startGen++; // invalidate any in-flight startRemoteSession awaiting ICE
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (ws) { ws.close(); ws = null; }
   if (sig) { try { sig.close(); } catch (e) {} sig = null; }
   if (dc) { try { dc.close(); } catch (e) {} dc = null; }
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
-  imgEl.style.display = 'none';
   vidEl.style.display = 'none';
   vidEl.srcObject = null;
 }
@@ -265,27 +250,6 @@ function showSurface() {
   surface().style.display = 'block';
   homeBtn.style.display = 'inline-block';
   hintEl.style.display = 'block';
-}
-
-modeRtcBtn.onclick = () => setMode('rtc');
-modeJpgBtn.onclick = () => setMode('jpg');
-
-function setMode(m) {
-  if (m === mode) return;
-  mode = m;
-  currentUDID = null;
-  modeRtcBtn.classList.toggle('active', m === 'rtc');
-  modeJpgBtn.classList.toggle('active', m === 'jpg');
-  teardown();
-  enterMode();
-}
-
-// Each mode populates the simulator list its own way:
-//   rtc → control plane comes up first, list arrives over the DataChannel
-//   jpg → REST (Phase 1 fallback)
-function enterMode() {
-  simsEl.innerHTML = mode === 'rtc' ? 'pick or pair a Mac above' : 'loading…';
-  if (mode === 'jpg') loadSimsREST();
 }
 
 function renderSims(sims) {
@@ -299,14 +263,12 @@ function renderSims(sims) {
 }
 
 function onPick(s) {
-  if (mode === 'rtc') pickRTC(s);
-  else pickJPG(s);
+  pickRTC(s);
 }
 
 // ---- RTC path: control plane + video on demand ----
-// Signaling is pluggable: local mode talks to /rtc; remote mode pairs through
-// the broker carried in the URL fragment (#signal&token&pubkey). The peer +
-// control DataChannel and all downstream control-plane logic are identical.
+// Signaling pairs through the broker carried in the URL fragment
+// (#signal&token&pubkey). The peer + control DataChannel carry video + input.
 
 // pairing() returns enrollment coordinates iff the URL fragment carries a pair
 // secret: {signal, daemon, pair}. Reconnects use saved Macs instead.
@@ -429,28 +391,6 @@ async function signal3C(s, gen) {
   sig.onclose = () => { if (gen === startGen) scheduleReconnect(); };
 }
 
-// Local dev signaling: one /rtc WS, offer→answer, no auth (localhost).
-async function signalLocal(gen) {
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  await iceGatheringComplete(pc);
-  if (gen !== startGen) return; // superseded
-
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  sig = new WebSocket(`${proto}://${location.host}/rtc`);
-  sig.onopen = () => sig.send(JSON.stringify({type: 'offer', sdp: pc.localDescription.sdp}));
-  sig.onmessage = async (ev) => {
-    const m = JSON.parse(ev.data);
-    if (m.type === 'answer') {
-      await pc.setRemoteDescription({type: 'answer', sdp: m.sdp});
-      minimizeBuffer(pc);
-    } else if (m.type === 'error') {
-      alert('rtc signaling error: ' + m.msg);
-      teardown();
-    }
-  };
-}
-
 // verifyAnswer checks the daemon's Ed25519 signature over the answer SDP using
 // WebCrypto. Returns false on any decode/verify failure.
 async function verifyAnswer(pubB64, sdp, sigB64) {
@@ -515,44 +455,6 @@ function pickRTC(s) {
   }
 }
 
-// ---- JPG path (Phase 1, unchanged transport) ----
-async function loadSimsREST() {
-  try {
-    const r = await fetch('/api/simulators');
-    renderSims(await r.json());
-  } catch (e) {
-    simsEl.innerHTML = 'failed to load simulators: ' + e;
-  }
-}
-
-async function pickJPG(s) {
-  if (s.state !== 'Booted') {
-    const r = await fetch('/api/boot', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({udid: s.udid}),
-    });
-    if (!r.ok) { alert('boot failed: ' + (await r.text())); return; }
-  }
-  currentUDID = s.udid;
-  teardown();
-  startJPG(s.udid);
-}
-
-function startJPG(udid) {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/session?udid=${encodeURIComponent(udid)}`);
-  ws.binaryType = 'blob';
-  ws.onmessage = (ev) => {
-    if (typeof ev.data === 'string') { console.log('status', ev.data); return; }
-    const url = URL.createObjectURL(ev.data);
-    const old = imgEl.src;
-    imgEl.src = url;
-    showSurface();
-    if (old) URL.revokeObjectURL(old);
-  };
-  ws.onclose = () => { console.log('ws closed'); };
-}
-
 // Minimize the receiver playout buffer for low latency (Chrome; try/catch for Safari).
 function minimizeBuffer(pc) {
   pc.getReceivers().forEach(r => {
@@ -576,18 +478,11 @@ function iceGatheringComplete(pc) {
 
 // ---- Shared input ----
 function sendControl(obj) {
-  const s = JSON.stringify(obj);
-  if (mode === 'rtc') {
-    if (dc && dc.readyState === 'open') dc.send(s);
-  } else {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(s);
-  }
+  if (dc && dc.readyState === 'open') dc.send(JSON.stringify(obj));
 }
 
 function controlReady() {
-  return mode === 'rtc'
-    ? (dc && dc.readyState === 'open' && currentUDID)
-    : (ws && ws.readyState === WebSocket.OPEN);
+  return dc && dc.readyState === 'open' && currentUDID;
 }
 
 function normCoords(e) {
@@ -600,7 +495,7 @@ function normCoords(e) {
 const SWIPE_THRESHOLD_PX = 6;
 let drag = null;
 
-for (const el of [imgEl, vidEl]) {
+for (const el of [vidEl]) {
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     const c = normCoords(e);
@@ -641,7 +536,7 @@ homeBtn.onclick = () => sendControl({type: 'home'});
   renderMacs();
   setupStartPanel();          // app-secret input + Start drives pairing/reconnect
   setupSubscriptionPanel();   // defined in Task 18
-  if (mode === 'jpg') loadSimsREST();
+  simsEl.innerHTML = 'pick or pair a Mac above';
 })();
 </script>
 </body>

@@ -1,5 +1,7 @@
-// Package server exposes the simcast daemon HTTP API: REST list/boot plus a
-// per-session WebSocket that streams JPEG frames and accepts taps.
+// Package server exposes the simcast daemon HTTP API: REST list/boot plus the
+// authenticated WebRTC rendezvous (via the signaling broker) that streams H.264
+// and carries control over a DataChannel. There is no unauthenticated local
+// streaming path — all video/input requires a paired client.
 package server
 
 import (
@@ -42,8 +44,6 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/simulators", s.handleSimulators)
 	mux.HandleFunc("/api/boot", s.handleBoot)
-	mux.HandleFunc("/session", s.handleSession)
-	mux.HandleFunc("/rtc", s.handleRTC)
 	if s.webDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.webDir)))
 	}
