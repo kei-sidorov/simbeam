@@ -1,24 +1,28 @@
-// Package server exposes the simcast daemon HTTP API: REST list/boot plus the
-// authenticated WebRTC rendezvous (via the signaling broker) that streams H.264
-// and carries control over a DataChannel. There is no unauthenticated local
-// streaming path — all video/input requires a paired client.
+// Package server drives the simcast daemon's authenticated WebRTC rendezvous
+// (via the signaling broker): it streams H.264 and carries control (list/boot/
+// attach/detach + input) over a DataChannel, all behind an Ed25519 pairing gate.
+// The only HTTP surface is the optional static debug client (--web); there is no
+// unauthenticated streaming or management endpoint — all video/input/lifecycle
+// requires a paired client.
 package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/kei-sidorov/simcast/internal/companion"
 )
 
-// Companion is the lifecycle surface the server needs (satisfied by *companion.Client).
+// Companion is the simulator lifecycle surface the server needs (satisfied by
+// *companion.Client). list/boot run over the authenticated control DataChannel
+// (see rtcDispatch), not over HTTP.
 type Companion interface {
 	List(ctx context.Context) ([]companion.Simulator, error)
 	Boot(ctx context.Context, udid string) error
 }
 
-// Server wires HTTP handlers over a Companion plus the idb_companion binary path.
+// Server drives the WebRTC rendezvous over a Companion plus the idb_companion
+// binary path.
 type Server struct {
 	comp     Companion
 	binary   string                    // path to idb_companion for sidecars; "" → "idb_companion"
@@ -39,55 +43,14 @@ func (s *Server) WithBinary(bin string) *Server { s.binary = bin; return s }
 // consumed. Used by the daemon to print confirmation to the terminal.
 func (s *Server) OnEnroll(fn func(clientPubKey string)) *Server { s.onEnroll = fn; return s }
 
-// Handler returns the configured HTTP handler.
+// Handler returns the HTTP handler that serves the static debug client at / when
+// webDir is set. It exposes no API: simulator list/boot and all video/input flow
+// over the authenticated WebRTC DataChannel (see ServeSignal/rtcDispatch). When
+// webDir is empty the handler serves nothing.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/simulators", s.handleSimulators)
-	mux.HandleFunc("/api/boot", s.handleBoot)
 	if s.webDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.webDir)))
 	}
 	return mux
-}
-
-func (s *Server) handleSimulators(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "GET only")
-		return
-	}
-	sims, err := s.comp.List(r.Context())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, sims)
-}
-
-func (s *Server) handleBoot(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
-	var body struct {
-		UDID string `json:"udid"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.UDID == "" {
-		writeErr(w, http.StatusBadRequest, "missing udid")
-		return
-	}
-	if err := s.comp.Boot(r.Context(), body.UDID); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"state": "Booted"})
-}
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
 }
