@@ -22,6 +22,13 @@ const (
 	TypeProof     = "proof"     // client → broker → daemon: Sig over daemon nonce (+ BrokerSig over broker nonce, stripped by broker)
 )
 
+// Live presence: a lightweight channel, independent of join, that streams
+// daemon online/offline to subscribed clients.
+const (
+	TypeWatch    = "watch"    // client → broker (first message): observe a list of daemonIDs
+	TypePresence = "presence" // broker → client: snapshot or one-key delta of online state
+)
+
 // Roles carried by Msg.Role on register/join.
 const (
 	RoleDaemon = "daemon"
@@ -32,19 +39,21 @@ const (
 // directions; unused fields stay zero. Non-trickle ICE: all candidates ride
 // inside SDP, so there is no separate candidate message.
 type Msg struct {
-	Type        string      `json:"type"`
-	Room        string      `json:"room,omitempty"`        // register/join: the pairing token
-	Role        string      `json:"role,omitempty"`        // register/join: daemon|client
-	SDP         string      `json:"sdp,omitempty"`         // offer/answer
-	PubKey      string      `json:"pubkey,omitempty"`      // register: daemon Ed25519 pubkey (base64); join/connect: client Ed25519 pubkey (base64)
-	Sig         string      `json:"sig,omitempty"`         // answer: daemon Ed25519 signature of SDP (base64); proof: client signature over daemon Nonce (base64)
-	ICEServers  []ICEServer `json:"iceServers,omitempty"`  // broker → peer
-	Msg         string      `json:"msg,omitempty"`         // error text
-	Daemon      string      `json:"daemon,omitempty"`      // register/join: daemonID (= daemon Ed25519 pubkey, base64)
-	Nonce       string      `json:"nonce,omitempty"`       // join: client nonce binding the enroll proof; challenge: daemon nonce to sign
-	BrokerNonce string      `json:"brokerNonce,omitempty"` // challenge: broker nonce the client signs so the broker can gate TURN
-	Pair        string      `json:"pair,omitempty"`        // join: HMAC-SHA256(S, clientPubKey‖0x00‖nonce) enrollment proof
-	BrokerSig   string      `json:"brokerSig,omitempty"`   // proof: client Ed25519 signature over BrokerNonce (verified+stripped by broker)
+	Type        string          `json:"type"`
+	Room        string          `json:"room,omitempty"`        // register/join: the pairing token
+	Role        string          `json:"role,omitempty"`        // register/join: daemon|client
+	SDP         string          `json:"sdp,omitempty"`         // offer/answer
+	PubKey      string          `json:"pubkey,omitempty"`      // register: daemon Ed25519 pubkey (base64); join/connect: client Ed25519 pubkey (base64)
+	Sig         string          `json:"sig,omitempty"`         // answer: daemon Ed25519 signature of SDP (base64); proof: client signature over daemon Nonce (base64)
+	ICEServers  []ICEServer     `json:"iceServers,omitempty"`  // broker → peer
+	Msg         string          `json:"msg,omitempty"`         // error text
+	Daemon      string          `json:"daemon,omitempty"`      // register/join: daemonID (= daemon Ed25519 pubkey, base64)
+	Nonce       string          `json:"nonce,omitempty"`       // join: client nonce binding the enroll proof; challenge: daemon nonce to sign
+	BrokerNonce string          `json:"brokerNonce,omitempty"` // challenge: broker nonce the client signs so the broker can gate TURN
+	Pair        string          `json:"pair,omitempty"`        // join: HMAC-SHA256(S, clientPubKey‖0x00‖nonce) enrollment proof
+	BrokerSig   string          `json:"brokerSig,omitempty"`   // proof: client Ed25519 signature over BrokerNonce (verified+stripped by broker)
+	Daemons     []string        `json:"daemons,omitempty"`     // watch: daemonIDs to observe
+	States      map[string]bool `json:"states,omitempty"`      // presence: daemonID → online (snapshot or delta)
 }
 
 // ICEServer is the subset of the WebRTC RTCIceServer JSON shape we transmit.

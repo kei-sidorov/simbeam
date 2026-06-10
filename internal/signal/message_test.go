@@ -33,3 +33,25 @@ func TestMsg_NewFieldsRoundTrip(t *testing.T) {
 		t.Fatalf("handshake type constants collide")
 	}
 }
+
+func TestMsg_PresenceFieldsRoundTrip(t *testing.T) {
+	in := Msg{
+		Type:    TypePresence,
+		Daemons: []string{"A==", "B=="},
+		States:  map[string]bool{"A==": true, "B==": false},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out Msg
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
+	}
+	if TypeWatch == TypePresence {
+		t.Fatalf("presence type constants collide")
+	}
+}
