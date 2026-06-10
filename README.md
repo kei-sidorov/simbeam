@@ -149,6 +149,7 @@ ScreenCaptureKit pipeline, bundling/notarizing `idb_companion`. See
 
 ## Documentation
 
+- [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) — plain-language tour of the protocol: actors, pairing, sessions, TURN & subscriptions (with a glossary). Good to feed an LLM building a client.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — what we build and **why** (full context).
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — phases and their definition of done.
 - [`docs/decisions.md`](docs/decisions.md) — chronological decision log (ADR-lite).
