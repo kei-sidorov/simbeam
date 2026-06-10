@@ -124,6 +124,7 @@ function saveMac(mac) {
   macs.push(mac);
   localStorage.setItem('simcast_macs', JSON.stringify(macs));
   renderMacs();
+  subscribePresence(); // re-watch with the updated daemon list
 }
 function renderMacs() {
   const macs = loadMacs();
@@ -132,10 +133,66 @@ function renderMacs() {
   if (!macs.length) { el.textContent = 'none yet'; return; }
   macs.forEach(m => {
     const b = document.createElement('button');
-    b.textContent = `${m.name || 'Mac'} (${m.daemon.slice(0, 8)}…)`;
+    b.textContent = `${presenceDot(m.daemon)} ${m.name || 'Mac'} (${m.daemon.slice(0, 8)}…)`;
     b.onclick = () => connectRemote(m); // defined in Task 17
     el.appendChild(b);
   });
+}
+
+// ---- live presence (online/offline dots) ----
+// A presence WS is separate from the streaming `sig` WS: the broker dispatches on
+// the first message type (watch vs join), so both can target the same broker.
+let presenceState = {};   // daemonID → bool; absent key = unknown
+let presenceConns = [];   // [{ws, signal, ids, timer, closed, backoff}]
+
+function presenceDot(daemon) {
+  if (presenceState[daemon] === true) return '🟢';
+  if (presenceState[daemon] === false) return '⚪';
+  return '?'; // snapshot not yet received / link down
+}
+
+// subscribePresence tears down any existing presence WSs and opens one per
+// distinct broker (grouping saved Macs by their `signal` URL — in practice one).
+function subscribePresence() {
+  presenceConns.forEach(pc => {
+    pc.closed = true;
+    clearTimeout(pc.timer);
+    if (pc.ws) pc.ws.close();
+  });
+  presenceConns = [];
+
+  const byBroker = {};
+  loadMacs().forEach(m => { (byBroker[m.signal] = byBroker[m.signal] || []).push(m.daemon); });
+
+  Object.keys(byBroker).forEach(signal => {
+    const pc = {ws: null, signal, ids: byBroker[signal], timer: null, closed: false, backoff: 1000};
+    presenceConns.push(pc);
+    openPresence(pc);
+  });
+}
+
+function openPresence(pc) {
+  const ws = new WebSocket(pc.signal);
+  pc.ws = ws;
+  ws.onopen = () => {
+    pc.backoff = 1000;
+    ws.send(JSON.stringify({type: 'watch', daemons: pc.ids}));
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'presence' && m.states) {
+      Object.assign(presenceState, m.states); // merge snapshot or one-key delta
+      renderMacs();
+    }
+  };
+  ws.onclose = () => {
+    if (pc.closed) return; // intentional teardown by subscribePresence
+    pc.ids.forEach(id => { delete presenceState[id]; }); // dots → '?' until reconnect
+    renderMacs();
+    pc.timer = setTimeout(() => openPresence(pc), pc.backoff);
+    pc.backoff = Math.min(pc.backoff * 2, 30000);
+  };
+  ws.onerror = () => { /* onclose follows; reconnect handled there */ };
 }
 
 // ---- 3C: subscription emulation + TURN indicator ----
@@ -534,6 +591,7 @@ homeBtn.onclick = () => sendControl({type: 'home'});
   await loadOrCreateIdentity();
   renderIdentity();
   renderMacs();
+  subscribePresence(); // light up dots for already-paired Macs immediately
   setupStartPanel();          // app-secret input + Start drives pairing/reconnect
   setupSubscriptionPanel();   // defined in Task 18
   simsEl.innerHTML = 'pick or pair a Mac above';
