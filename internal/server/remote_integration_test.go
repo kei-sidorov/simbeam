@@ -390,6 +390,62 @@ func TestUnpinnedClientRejected(t *testing.T) {
 	}
 }
 
+// TestExpiredPairingCodeTyped: a client scanning a QR whose window has expired
+// gets a typed CodePairExpired, not just opaque "not paired" text (BLIND-SPOTS
+// #4) — even when its enrollment proof is otherwise valid.
+func TestExpiredPairingCodeTyped(t *testing.T) {
+	wsURL := brokerFixture(t, signalbroker.Config{STUNURLs: []string{"stun:x"}})
+	pub, priv, _ := signal.GenerateKeyPair()
+	id := Identity{PubB64: pub, Priv: priv}
+	pinned, _ := LoadPinnedStore(t.TempDir() + "/clients.json")
+
+	win := NewPairingWindow()
+	const secret = "ENROLL-SECRET"
+	win.Open(secret, time.Now().Add(-10*time.Minute), 5*time.Minute) // already past its TTL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	startDaemon(t, ctx, wsURL, id, pinned, win)
+
+	clientPub, clientPriv, _ := signal.GenerateKeyPair()
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret)
+	t.Cleanup(func() { _ = ws.Close() })
+	if first.Type != signal.TypeError || first.Code != signal.CodePairExpired {
+		t.Fatalf("want typed %q error, got %+v", signal.CodePairExpired, first)
+	}
+}
+
+// TestUsedPairingCodeTyped: a client presenting a secret whose single-use window
+// was already consumed gets a typed CodePairUsed, distinct from "expired".
+func TestUsedPairingCodeTyped(t *testing.T) {
+	wsURL := brokerFixture(t, signalbroker.Config{STUNURLs: []string{"stun:x"}})
+	pub, priv, _ := signal.GenerateKeyPair()
+	id := Identity{PubB64: pub, Priv: priv}
+	pinned, _ := LoadPinnedStore(t.TempDir() + "/clients.json")
+
+	win := NewPairingWindow()
+	const secret = "ENROLL-SECRET"
+	now := time.Now()
+	win.Open(secret, now, 5*time.Minute)
+	// Burn the single use as if a first client had already paired.
+	firstPub, _, _ := signal.GenerateKeyPair()
+	n, _ := signal.NewNonce()
+	if r := win.verify(firstPub, n, signal.EnrollProof(secret, firstPub, n), now); r != pairOK {
+		t.Fatalf("setup: fresh window should accept the first proof, got %v", r)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	startDaemon(t, ctx, wsURL, id, pinned, win)
+
+	clientPub, clientPriv, _ := signal.GenerateKeyPair()
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret)
+	t.Cleanup(func() { _ = ws.Close() })
+	if first.Type != signal.TypeError || first.Code != signal.CodePairUsed {
+		t.Fatalf("want typed %q error, got %+v", signal.CodePairUsed, first)
+	}
+}
+
 // TestTurnGateBySubscription: an active subscription for the client's key yields
 // STUN+TURN; no subscription yields STUN only. The client key the broker gates on
 // is the one authenticated by the challenge-response.

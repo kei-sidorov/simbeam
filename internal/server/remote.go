@@ -124,17 +124,28 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 		case signal.TypeConnect:
 			cleanup() // drop any prior client
 			allow, enr := false, false
+			var code string
 			if pinned.Contains(m.PubKey) {
 				allow = true
+			} else {
 				// NOTE: a valid enrollment proof consumes the single-use window here,
 				// even if the client subsequently fails the key challenge below. An
 				// attacker would need to know S to reach this path; the user re-arms
-				// with P. (Acceptable for the self-host scope.)
-			} else if win.verify(m.PubKey, m.Nonce, m.Pair, time.Now()) {
-				allow, enr = true, true
+				// with P. (Acceptable for the self-host scope.) The verify reason is
+				// surfaced as a typed Code so the client can tell expired from used.
+				switch win.verify(m.PubKey, m.Nonce, m.Pair, time.Now()) {
+				case pairOK:
+					allow, enr = true, true
+				case pairExpired:
+					code = signal.CodePairExpired
+				case pairUsed:
+					code = signal.CodePairUsed
+				default: // pairNoWindow, pairBadProof
+					code = signal.CodePairInvalid
+				}
 			}
 			if !allow {
-				_ = send(signal.Msg{Type: signal.TypeError, Msg: "not paired"})
+				_ = send(signal.Msg{Type: signal.TypeError, Code: code, Msg: "not paired"})
 				continue
 			}
 			nonce, nerr := signal.NewNonce()

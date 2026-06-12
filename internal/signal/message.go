@@ -35,6 +35,16 @@ const (
 	RoleClient = "client"
 )
 
+// Error codes carried by Msg.Code alongside the human text in Msg.Msg, so a
+// client can branch on a stable machine value instead of grepping the error
+// text (which is fragile — see BLIND-SPOTS #4). Msg stays human-readable.
+const (
+	CodeOffline     = "offline"      // join: the target daemon is not registered
+	CodePairExpired = "pair_expired" // connect: the enrollment window expired or was cancelled
+	CodePairUsed    = "pair_used"    // connect: the enrollment window was already consumed
+	CodePairInvalid = "pair_invalid" // connect: no window armed, or the pairing secret did not match
+)
+
 // Msg is the single JSON envelope for every signaling message in both
 // directions; unused fields stay zero. Non-trickle ICE: all candidates ride
 // inside SDP, so there is no separate candidate message.
@@ -47,6 +57,7 @@ type Msg struct {
 	Sig         string          `json:"sig,omitempty"`         // answer: daemon Ed25519 signature of SDP (base64); proof: client signature over daemon Nonce (base64)
 	ICEServers  []ICEServer     `json:"iceServers,omitempty"`  // broker → peer
 	Msg         string          `json:"msg,omitempty"`         // error text
+	Code        string          `json:"code,omitempty"`        // error: machine-readable code (see Code* constants)
 	Daemon      string          `json:"daemon,omitempty"`      // register/join: daemonID (= daemon Ed25519 pubkey, base64)
 	Nonce       string          `json:"nonce,omitempty"`       // join: client nonce binding the enroll proof; challenge: daemon nonce to sign
 	BrokerNonce string          `json:"brokerNonce,omitempty"` // challenge: broker nonce the client signs so the broker can gate TURN

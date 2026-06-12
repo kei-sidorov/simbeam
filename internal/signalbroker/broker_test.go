@@ -49,6 +49,9 @@ func TestClientWithoutDaemonGetsOffline(t *testing.T) {
 	if m.Type != signal.TypeError || !strings.Contains(m.Msg, "offline") {
 		t.Fatalf("want offline error, got %+v", m)
 	}
+	if m.Code != signal.CodeOffline {
+		t.Fatalf("want typed offline code %q, got %q", signal.CodeOffline, m.Code)
+	}
 }
 
 // TestHandshakeRelayAndGate drives a fake daemon + fake client through the broker

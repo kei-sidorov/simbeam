@@ -206,7 +206,7 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 	d := b.daemons[join.Daemon]
 	b.mu.Unlock()
 	if d == nil {
-		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "device offline — wake your Mac"})
+		_ = c.send(signal.Msg{Type: signal.TypeError, Code: signal.CodeOffline, Msg: "device offline — wake your Mac"})
 		return
 	}
 
