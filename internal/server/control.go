@@ -12,8 +12,8 @@ import (
 // controlMsg is an inbound message from the client — over the WebRTC "control"
 // DataChannel.
 type controlMsg struct {
-	Type     string  `json:"type"` // tap|home|swipe|key|list|boot|attach|detach
-	UDID     string  `json:"udid"` // boot, attach
+	Type     string  `json:"type"` // tap|home|swipe|key|list|boot|attach|detach|shutdown
+	UDID     string  `json:"udid"` // boot, attach, shutdown
 	X        float64 `json:"x"`
 	Y        float64 `json:"y"`
 	X1       float64 `json:"x1"`
@@ -61,7 +61,7 @@ func parseControl(data []byte) (controlMsg, error) {
 		return m, fmt.Errorf("bad control json: %w", err)
 	}
 	switch m.Type {
-	case "tap", "home", "swipe", "key", "list", "boot", "attach", "detach":
+	case "tap", "home", "swipe", "key", "list", "boot", "attach", "detach", "shutdown":
 		return m, nil
 	default:
 		return m, fmt.Errorf("unknown control type %q", m.Type)

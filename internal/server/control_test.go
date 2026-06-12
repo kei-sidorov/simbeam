@@ -58,6 +58,7 @@ func TestParseControlManagementTypes(t *testing.T) {
 		{`{"type":"boot","udid":"ABC"}`, "boot", "ABC"},
 		{`{"type":"attach","udid":"XYZ"}`, "attach", "XYZ"},
 		{`{"type":"detach"}`, "detach", ""},
+		{`{"type":"shutdown","udid":"ABC"}`, "shutdown", "ABC"},
 	}
 	for _, c := range cases {
 		m, err := parseControl([]byte(c.in))

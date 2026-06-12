@@ -10,10 +10,12 @@ import (
 )
 
 type stubComp struct {
-	sims    []companion.Simulator
-	listErr error
-	booted  []string
-	bootErr error
+	sims        []companion.Simulator
+	listErr     error
+	booted      []string
+	bootErr     error
+	shutdown    []string
+	shutdownErr error
 }
 
 func (c *stubComp) List(context.Context) ([]companion.Simulator, error) {
@@ -22,6 +24,10 @@ func (c *stubComp) List(context.Context) ([]companion.Simulator, error) {
 func (c *stubComp) Boot(_ context.Context, udid string) error {
 	c.booted = append(c.booted, udid)
 	return c.bootErr
+}
+func (c *stubComp) Shutdown(_ context.Context, udid string) error {
+	c.shutdown = append(c.shutdown, udid)
+	return c.shutdownErr
 }
 
 // newTestDispatch returns a dispatcher whose replies are captured into *out.
@@ -81,6 +87,42 @@ func TestDoBootSuccess(t *testing.T) {
 	}
 	if len(c.booted) != 1 || c.booted[0] != "ABC" {
 		t.Fatalf("Boot(ABC) not called, got %v", c.booted)
+	}
+}
+
+func TestDoShutdownMissingUDID(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{}
+	d := newTestDispatch(c, &out)
+	d.handle([]byte(`{"type":"shutdown"}`))
+	if len(out) != 1 || out[0].Type != "error" {
+		t.Fatalf("want error reply for missing udid, got %+v", out)
+	}
+	if len(c.shutdown) != 0 {
+		t.Fatalf("Shutdown should not be called, got %v", c.shutdown)
+	}
+}
+
+func TestDoShutdownSuccess(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{}
+	d := newTestDispatch(c, &out)
+	d.handle([]byte(`{"type":"shutdown","udid":"ABC"}`))
+	if len(out) != 1 || out[0].Type != "shutdown" || out[0].UDID != "ABC" {
+		t.Fatalf("want shutdown reply for ABC, got %+v", out)
+	}
+	if len(c.shutdown) != 1 || c.shutdown[0] != "ABC" {
+		t.Fatalf("Shutdown(ABC) not called, got %v", c.shutdown)
+	}
+}
+
+func TestDoShutdownErrorReply(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{shutdownErr: errors.New("boom")}
+	d := newTestDispatch(c, &out)
+	d.handle([]byte(`{"type":"shutdown","udid":"ABC"}`))
+	if len(out) != 1 || out[0].Type != "error" {
+		t.Fatalf("want one error reply, got %+v", out)
 	}
 }
 

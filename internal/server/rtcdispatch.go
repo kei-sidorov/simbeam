@@ -12,7 +12,7 @@ import (
 // ctrlReply is a downstream control message: daemon → client over the
 // "control" DataChannel.
 type ctrlReply struct {
-	Type string                `json:"type"` // sims|booted|attached|detached|error
+	Type string                `json:"type"` // sims|booted|attached|detached|shutdown|error
 	Msg  string                `json:"msg,omitempty"`
 	Sims []companion.Simulator `json:"sims,omitempty"`
 	UDID string                `json:"udid,omitempty"`
@@ -51,6 +51,8 @@ func (d *rtcDispatch) handle(data []byte) {
 		d.doList()
 	case "boot":
 		d.doBoot(m.UDID)
+	case "shutdown":
+		d.doShutdown(m.UDID)
 	case "attach":
 		d.doAttach(m.UDID)
 	case "detach":
@@ -80,6 +82,27 @@ func (d *rtcDispatch) doBoot(udid string) {
 		return
 	}
 	d.reply(ctrlReply{Type: "booted", UDID: udid})
+}
+
+func (d *rtcDispatch) doShutdown(udid string) {
+	if udid == "" {
+		d.reply(ctrlReply{Type: "error", Msg: "shutdown: missing udid"})
+		return
+	}
+	// If the live feed is this very simulator, stop it first — shutting the sim
+	// out from under the sidecar would break the pump anyway. A feed of some
+	// other simulator is left untouched.
+	d.mu.Lock()
+	current := d.att != nil && d.att.udid == udid
+	d.mu.Unlock()
+	if current {
+		d.stopAttachment()
+	}
+	if err := d.comp.Shutdown(d.baseCtx, udid); err != nil {
+		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
+		return
+	}
+	d.reply(ctrlReply{Type: "shutdown", UDID: udid})
 }
 
 func (d *rtcDispatch) doInput(m controlMsg) {

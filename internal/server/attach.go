@@ -16,6 +16,7 @@ type attachment struct {
 	sidecar *idb.Sidecar
 	client  *idb.Client // routes input (taps/swipes/keys) to this feed via doInput
 	screen  idb.Screen
+	udid    string // simulator being streamed; lets doShutdown stop only its own feed
 }
 
 // doAttach tears down any current feed, spawns a sidecar for udid, and starts
@@ -61,7 +62,7 @@ func (d *rtcDispatch) doAttach(udid string) {
 
 	// Register the attachment BEFORE launching the pump so any concurrent or
 	// subsequent stopAttachment (detach / switch / session end) always sees it.
-	att := &attachment{cancel: cancel, sidecar: sidecar, client: client, screen: screen}
+	att := &attachment{cancel: cancel, sidecar: sidecar, client: client, screen: screen, udid: udid}
 	d.mu.Lock()
 	d.att = att
 	d.mu.Unlock()

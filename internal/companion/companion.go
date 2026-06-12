@@ -215,6 +215,26 @@ func (c *Client) Boot(ctx context.Context, udid string) error {
 	return nil
 }
 
+// Shutdown shuts down the simulator with the given UDID via
+// `xcrun simctl shutdown <udid>`. Shutting down an already-shut-down simulator
+// is treated as success (a no-op): simctl exits non-zero with a
+// "current state: Shutdown" message that we recognize and swallow, mirroring
+// Boot's already-booted handling.
+func (c *Client) Shutdown(ctx context.Context, udid string) error {
+	_, stderr, err := c.execSimctl(ctx, "shutdown", udid)
+	if err != nil {
+		if strings.Contains(stderr, "current state: Shutdown") {
+			return nil // already shut down — no-op
+		}
+		msg := strings.TrimSpace(stderr)
+		if msg != "" {
+			return fmt.Errorf("simctl shutdown %s: %w: %s", udid, err, msg)
+		}
+		return fmt.Errorf("simctl shutdown %s: %w", udid, err)
+	}
+	return nil
+}
+
 // run executes idb_companion with the given args and returns its stdout. The
 // objc warning and CoreSimulator diagnostics are emitted on stderr, which is
 // only surfaced when the command fails.

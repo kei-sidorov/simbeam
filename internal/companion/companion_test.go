@@ -53,6 +53,33 @@ func TestBootFailureIncludesStderr(t *testing.T) {
 	}
 }
 
+func TestShutdownSuccess(t *testing.T) {
+	c := fakeSimctl(t, "exit 0\n")
+	if err := c.Shutdown(context.Background(), "UDID-123"); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+}
+
+// Shutting down an already-shut-down simulator must be a no-op: simctl exits
+// non-zero with a specific message we recognize and swallow.
+func TestShutdownAlreadyShutdownIsNoOp(t *testing.T) {
+	c := fakeSimctl(t, "echo 'Unable to shutdown device in current state: Shutdown' 1>&2\nexit 164\n")
+	if err := c.Shutdown(context.Background(), "UDID-123"); err != nil {
+		t.Fatalf("shutting down an already-shut-down device should succeed, got: %v", err)
+	}
+}
+
+func TestShutdownFailureIncludesStderr(t *testing.T) {
+	c := fakeSimctl(t, "echo 'Invalid device or device pair: BAD' 1>&2\nexit 148\n")
+	err := c.Shutdown(context.Background(), "BAD")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Invalid device") {
+		t.Fatalf("error %q does not include stderr", err)
+	}
+}
+
 func TestListParsesAndFilters(t *testing.T) {
 	c := fakeSimctl(t, "cat <<'EOF'\n"+sampleDevicesJSON+"\nEOF\n")
 	sims, err := c.List(context.Background())
