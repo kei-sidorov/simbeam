@@ -16,12 +16,14 @@ const rtcFPS = 15
 // to a fresh dispatcher. iceServers comes from the broker for remote rendezvous.
 // The caller owns ctx and must call sess.Close()/d.stopAttachment() on teardown.
 func (s *Server) startSession(ctx context.Context, iceServers []webrtc.ICEServer) (*rtc.Session, *rtcDispatch, error) {
-	d := &rtcDispatch{comp: s.comp, binary: s.binary, baseCtx: ctx}
+	d := &rtcDispatch{comp: s.comp, binary: s.binary, baseCtx: ctx, hostName: s.hostName, osVersion: s.osVersion}
 	sess, err := rtc.New(d.handle, iceServers)
 	if err != nil {
 		return nil, nil, err
 	}
 	d.send = func(b []byte) { _ = sess.Send(b) }
 	d.writeFrame = sess.WriteFrame
+	// Push the hello (host info) the moment the client opens the control channel.
+	sess.OnControlOpen(d.sendHello)
 	return sess, d, nil
 }

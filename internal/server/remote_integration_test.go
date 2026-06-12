@@ -173,20 +173,50 @@ func runHandshake(t *testing.T, ws *websocket.Conn, pc *webrtc.PeerConnection, d
 	}
 }
 
-// expectSims waits for the control DataChannel to deliver a 2-sim list.
+// expectSims waits for the control DataChannel to deliver a 2-sim list. The
+// daemon also pushes an unsolicited "hello" on channel open, which may arrive
+// before the sims reply, so non-sims frames are skipped.
 func expectSims(t *testing.T, replies chan []byte, pc *webrtc.PeerConnection) {
 	t.Helper()
-	select {
-	case raw := <-replies:
-		var r ctrlReply
-		if err := json.Unmarshal(raw, &r); err != nil {
-			t.Fatalf("unmarshal reply %q: %v", raw, err)
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case raw := <-replies:
+			var r ctrlReply
+			if err := json.Unmarshal(raw, &r); err != nil {
+				t.Fatalf("unmarshal reply %q: %v", raw, err)
+			}
+			if r.Type == "hello" {
+				continue // unsolicited greeting; keep waiting for sims
+			}
+			if r.Type != "sims" || len(r.Sims) != 2 {
+				t.Fatalf("want 2 sims, got type=%q n=%d (%s)", r.Type, len(r.Sims), raw)
+			}
+			return
+		case <-deadline:
+			t.Fatalf("control reply never arrived (state=%s)", pc.ConnectionState())
 		}
-		if r.Type != "sims" || len(r.Sims) != 2 {
-			t.Fatalf("want 2 sims, got type=%q n=%d (%s)", r.Type, len(r.Sims), raw)
+	}
+}
+
+// expectHello waits for the daemon's unsolicited "hello" greeting and returns
+// its Mac name + macOS version, skipping any other control frames.
+func expectHello(t *testing.T, replies chan []byte, pc *webrtc.PeerConnection) ctrlReply {
+	t.Helper()
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case raw := <-replies:
+			var r ctrlReply
+			if err := json.Unmarshal(raw, &r); err != nil {
+				t.Fatalf("unmarshal reply %q: %v", raw, err)
+			}
+			if r.Type == "hello" {
+				return r
+			}
+		case <-deadline:
+			t.Fatalf("hello never arrived (state=%s)", pc.ConnectionState())
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatalf("control reply never arrived (state=%s)", pc.ConnectionState())
 	}
 }
 
@@ -235,6 +265,36 @@ func TestEnrollmentEndToEnd(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("OnEnroll never fired on enrollment")
+	}
+}
+
+// TestHelloCarriesHostInfo: on control-channel open the daemon pushes a hello
+// carrying the Mac display name and macOS version (BLIND-SPOTS #2) so the client
+// can render them instead of a daemonID placeholder.
+func TestHelloCarriesHostInfo(t *testing.T) {
+	wsURL := brokerFixture(t, signalbroker.Config{STUNURLs: []string{"stun:stun.l.google.com:19302"}})
+
+	pub, priv, _ := signal.GenerateKeyPair()
+	id := Identity{PubB64: pub, Priv: priv}
+
+	clientPub, clientPriv, _ := signal.GenerateKeyPair()
+	pinned, _ := LoadPinnedStore(t.TempDir() + "/clients.json")
+	_ = pinned.Add(clientPub, "iPad")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	startDaemon(t, ctx, wsURL, id, pinned, NewPairingWindow(), func(s *Server) {
+		s.WithHost("Kirill's MacBook Pro", "26.5")
+	})
+
+	pc, replies := newOfferer(t)
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
+	t.Cleanup(func() { _ = ws.Close() })
+	runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
+
+	hello := expectHello(t, replies, pc)
+	if hello.Name != "Kirill's MacBook Pro" || hello.OSVersion != "26.5" {
+		t.Fatalf("hello = {name:%q osVersion:%q}, want Mac name + macOS version", hello.Name, hello.OSVersion)
 	}
 }
 

@@ -12,12 +12,14 @@ import (
 // ctrlReply is a downstream control message: daemon → client over the
 // "control" DataChannel.
 type ctrlReply struct {
-	Type string                `json:"type"` // sims|booted|attached|detached|shutdown|error
-	Msg  string                `json:"msg,omitempty"`
-	Sims []companion.Simulator `json:"sims,omitempty"`
-	UDID string                `json:"udid,omitempty"`
-	W    uint64                `json:"w,omitempty"` // frame dimensions, set in the "attached" reply
-	H    uint64                `json:"h,omitempty"` // frame dimensions, set in the "attached" reply
+	Type      string                `json:"type"` // sims|booted|attached|detached|shutdown|hello|error
+	Msg       string                `json:"msg,omitempty"`
+	Sims      []companion.Simulator `json:"sims,omitempty"`
+	UDID      string                `json:"udid,omitempty"`
+	W         uint64                `json:"w,omitempty"`         // frame dimensions, set in the "attached" reply
+	H         uint64                `json:"h,omitempty"`         // frame dimensions, set in the "attached" reply
+	Name      string                `json:"name,omitempty"`      // hello: Mac display name
+	OSVersion string                `json:"osVersion,omitempty"` // hello: macOS version
 }
 
 // rtcDispatch is the per-session control plane. It owns at most one video
@@ -36,9 +38,19 @@ type rtcDispatch struct {
 	baseCtx    context.Context
 	send       func([]byte)
 	writeFrame func([]byte, time.Duration) error
+	hostName   string // Mac display name, sent in the hello
+	osVersion  string // macOS version, sent in the hello
 
 	mu  sync.Mutex
 	att *attachment
+}
+
+// sendHello pushes the unsolicited "hello" greeting the moment the control
+// channel opens: it carries the Mac's display name and macOS version so a
+// paired client can render "Kirill's MacBook Pro" / "macOS 26.5" instead of a
+// daemonID placeholder.
+func (d *rtcDispatch) sendHello() {
+	d.reply(ctrlReply{Type: "hello", Name: d.hostName, OSVersion: d.osVersion})
 }
 
 func (d *rtcDispatch) handle(data []byte) {

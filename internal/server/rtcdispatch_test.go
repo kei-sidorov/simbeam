@@ -135,6 +135,19 @@ func TestDoDetachReplies(t *testing.T) {
 	}
 }
 
+func TestSendHelloCarriesHostInfo(t *testing.T) {
+	var out []ctrlReply
+	d := newTestDispatch(&stubComp{}, &out)
+	d.hostName, d.osVersion = "Kirill's MacBook Pro", "26.5"
+	d.sendHello()
+	if len(out) != 1 || out[0].Type != "hello" {
+		t.Fatalf("want one hello reply, got %+v", out)
+	}
+	if out[0].Name != "Kirill's MacBook Pro" || out[0].OSVersion != "26.5" {
+		t.Fatalf("hello = {name:%q osVersion:%q}, want host info", out[0].Name, out[0].OSVersion)
+	}
+}
+
 func TestInputBeforeAttachIgnored(t *testing.T) {
 	var out []ctrlReply
 	d := newTestDispatch(&stubComp{}, &out)

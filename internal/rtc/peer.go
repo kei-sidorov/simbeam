@@ -19,12 +19,13 @@ var ErrNoControlChannel = errors.New("rtc: control channel not open")
 
 // Session is one WebRTC peer connection: H.264 video out, control DataChannel in.
 type Session struct {
-	pc        *webrtc.PeerConnection
-	track     *webrtc.TrackLocalStaticSample
-	mu        sync.Mutex // guards onClose and ctrl
-	onClose   func()
-	ctrl      *webrtc.DataChannel
-	closeOnce sync.Once
+	pc         *webrtc.PeerConnection
+	track      *webrtc.TrackLocalStaticSample
+	mu         sync.Mutex // guards onClose, onCtrlOpen and ctrl
+	onClose    func()
+	onCtrlOpen func()
+	ctrl       *webrtc.DataChannel
+	closeOnce  sync.Once
 }
 
 // New creates a peer with one H.264 video track and routes inbound "control"
@@ -54,6 +55,14 @@ func New(onControl func([]byte), iceServers []webrtc.ICEServer) (*Session, error
 		s.mu.Lock()
 		s.ctrl = dc
 		s.mu.Unlock()
+		dc.OnOpen(func() {
+			s.mu.Lock()
+			fn := s.onCtrlOpen
+			s.mu.Unlock()
+			if fn != nil {
+				fn()
+			}
+		})
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 			if onControl != nil {
 				onControl(msg.Data)
@@ -116,6 +125,16 @@ func (s *Session) Send(b []byte) error {
 func (s *Session) OnClose(fn func()) {
 	s.mu.Lock()
 	s.onClose = fn
+	s.mu.Unlock()
+}
+
+// OnControlOpen registers a callback fired when the remote opens the "control"
+// DataChannel — the first moment the daemon can push an unsolicited message
+// (e.g. the hello carrying host info). Safe to call from any goroutine; set it
+// before the peer connects.
+func (s *Session) OnControlOpen(fn func()) {
+	s.mu.Lock()
+	s.onCtrlOpen = fn
 	s.mu.Unlock()
 }
 

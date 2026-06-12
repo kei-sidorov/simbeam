@@ -25,10 +25,12 @@ type Companion interface {
 // Server drives the WebRTC rendezvous over a Companion plus the idb_companion
 // binary path.
 type Server struct {
-	comp     Companion
-	binary   string                    // path to idb_companion for sidecars; "" → "idb_companion"
-	webDir   string                    // static debug client dir; "" → not served
-	onEnroll func(clientPubKey string) // fired when a new client enrolls via the pairing window; nil → no-op
+	comp      Companion
+	binary    string                    // path to idb_companion for sidecars; "" → "idb_companion"
+	webDir    string                    // static debug client dir; "" → not served
+	onEnroll  func(clientPubKey string) // fired when a new client enrolls via the pairing window; nil → no-op
+	hostName  string                    // Mac display name, pushed in the hello (e.g. "Kirill's MacBook Pro"); "" → omitted
+	osVersion string                    // macOS version, pushed in the hello (e.g. "26.5"); "" → omitted
 }
 
 // New creates a Server. webDir is served at / when non-empty.
@@ -38,6 +40,14 @@ func New(comp Companion, webDir string) *Server {
 
 // WithBinary overrides the idb_companion path used for sidecars.
 func (s *Server) WithBinary(bin string) *Server { s.binary = bin; return s }
+
+// WithHost sets the Mac display name and macOS version the daemon pushes in the
+// per-session hello (so a paired client can show "Kirill's MacBook Pro" /
+// "macOS 26.5"). Either may be empty, in which case the client omits it.
+func (s *Server) WithHost(name, osVersion string) *Server {
+	s.hostName, s.osVersion = name, osVersion
+	return s
+}
 
 // OnEnroll registers a callback fired (with the client's public key) the moment a
 // not-yet-pinned client completes pairing — i.e. the single-use window was just

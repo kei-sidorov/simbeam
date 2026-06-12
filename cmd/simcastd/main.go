@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -82,6 +83,22 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  simcastd help    Show this help")
 }
 
+// macHostInfo returns the Mac's display name (scutil ComputerName) and macOS
+// version (sw_vers -productVersion) for the pairing hello. Best-effort: any
+// failure yields an empty string and the client simply omits that subtitle.
+func macHostInfo() (name, osVersion string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	run := func(bin string, args ...string) string {
+		out, err := exec.CommandContext(ctx, bin, args...).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	return run("scutil", "--get", "ComputerName"), run("sw_vers", "-productVersion")
+}
+
 // defaultStatePath returns ~/.simcast/<name>, falling back to ./.simcast/<name>.
 func defaultStatePath(name string) string {
 	home, err := os.UserHomeDir()
@@ -107,7 +124,8 @@ func runServe(argv []string) error {
 	if err != nil {
 		return err
 	}
-	srv := server.New(c, *webDir).WithBinary(path)
+	hostName, osVersion := macHostInfo()
+	srv := server.New(c, *webDir).WithBinary(path).WithHost(hostName, osVersion)
 
 	if *signalURL != "" {
 		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir, *identityPath, *clientsPath, *pairTTL)
