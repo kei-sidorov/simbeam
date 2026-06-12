@@ -20,6 +20,7 @@ type ctrlReply struct {
 	H         uint64                `json:"h,omitempty"`         // frame dimensions, set in the "attached" reply
 	Name      string                `json:"name,omitempty"`      // hello: Mac display name
 	OSVersion string                `json:"osVersion,omitempty"` // hello: macOS version
+	Paired    bool                  `json:"paired,omitempty"`    // hello: this client's key is pinned (enrollment confirmed)
 }
 
 // rtcDispatch is the per-session control plane. It owns at most one video
@@ -49,8 +50,15 @@ type rtcDispatch struct {
 // channel opens: it carries the Mac's display name and macOS version so a
 // paired client can render "Kirill's MacBook Pro" / "macOS 26.5" instead of a
 // daemonID placeholder.
+//
+// hello also doubles as the explicit pin-ack (paired:true): reaching the
+// control channel is only possible past the authentication gate, which an
+// enrolling client clears only after its key is durably pinned — so the greeting
+// is proof to the client that its key is saved. A client that persisted a Mac
+// optimistically on scan uses this to confirm the pairing actually took (a dial
+// that drops before the hello means the pin is unconfirmed).
 func (d *rtcDispatch) sendHello() {
-	d.reply(ctrlReply{Type: "hello", Name: d.hostName, OSVersion: d.osVersion})
+	d.reply(ctrlReply{Type: "hello", Name: d.hostName, OSVersion: d.osVersion, Paired: true})
 }
 
 func (d *rtcDispatch) handle(data []byte) {

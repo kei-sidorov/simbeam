@@ -220,6 +220,37 @@ func expectHello(t *testing.T, replies chan []byte, pc *webrtc.PeerConnection) c
 	}
 }
 
+// expectHelloAndSims drains control replies until it has seen BOTH the daemon's
+// hello and the 2-sim list (they race on channel open), returning the hello.
+func expectHelloAndSims(t *testing.T, replies chan []byte, pc *webrtc.PeerConnection) ctrlReply {
+	t.Helper()
+	var hello *ctrlReply
+	sawSims := false
+	deadline := time.After(15 * time.Second)
+	for hello == nil || !sawSims {
+		select {
+		case raw := <-replies:
+			var r ctrlReply
+			if err := json.Unmarshal(raw, &r); err != nil {
+				t.Fatalf("unmarshal reply %q: %v", raw, err)
+			}
+			switch r.Type {
+			case "hello":
+				h := r
+				hello = &h
+			case "sims":
+				if len(r.Sims) != 2 {
+					t.Fatalf("want 2 sims, got %d (%s)", len(r.Sims), raw)
+				}
+				sawSims = true
+			}
+		case <-deadline:
+			t.Fatalf("hello+sims never both arrived (state=%s)", pc.ConnectionState())
+		}
+	}
+	return *hello
+}
+
 // TestEnrollmentEndToEnd: open a pairing window, a brand-new client enrolls with
 // secret S, the daemon pins it, and the control DataChannel works.
 func TestEnrollmentEndToEnd(t *testing.T) {
@@ -251,7 +282,11 @@ func TestEnrollmentEndToEnd(t *testing.T) {
 	t.Cleanup(func() { _ = ws.Close() })
 
 	runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
-	expectSims(t, replies, pc)
+	// The fresh enrollee receives the hello pin-ack (paired:true), confirming its
+	// key is durably saved — the explicit confirmation iOS persists on (#3).
+	if hello := expectHelloAndSims(t, replies, pc); !hello.Paired {
+		t.Fatalf("enrolled client must receive hello paired:true, got %+v", hello)
+	}
 
 	if !pinned.Contains(clientPub) {
 		t.Fatalf("client was not pinned after enrollment")
@@ -295,6 +330,9 @@ func TestHelloCarriesHostInfo(t *testing.T) {
 	hello := expectHello(t, replies, pc)
 	if hello.Name != "Kirill's MacBook Pro" || hello.OSVersion != "26.5" {
 		t.Fatalf("hello = {name:%q osVersion:%q}, want Mac name + macOS version", hello.Name, hello.OSVersion)
+	}
+	if !hello.Paired {
+		t.Fatalf("hello must carry paired:true (pin-ack), got %+v", hello)
 	}
 }
 

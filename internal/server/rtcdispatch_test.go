@@ -146,6 +146,9 @@ func TestSendHelloCarriesHostInfo(t *testing.T) {
 	if out[0].Name != "Kirill's MacBook Pro" || out[0].OSVersion != "26.5" {
 		t.Fatalf("hello = {name:%q osVersion:%q}, want host info", out[0].Name, out[0].OSVersion)
 	}
+	if !out[0].Paired {
+		t.Fatalf("hello must carry paired:true (pin-ack), got %+v", out[0])
+	}
 }
 
 func TestInputBeforeAttachIgnored(t *testing.T) {

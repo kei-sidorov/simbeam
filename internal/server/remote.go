@@ -153,7 +153,15 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 				continue
 			}
 			if enrolling {
-				_ = pinned.Add(authPub, "")
+				// Pin BEFORE authenticating: only a durably-saved key may pass the
+				// gate, so the hello pin-ack (paired:true) the client later receives
+				// is never a lie. If the save fails the client stays unpaired and
+				// can re-pair, rather than becoming "saved but forever offline".
+				if err := pinned.Add(authPub, ""); err != nil {
+					_ = send(signal.Msg{Type: signal.TypeError, Msg: "could not save pairing"})
+					cleanup()
+					continue
+				}
 				if s.onEnroll != nil {
 					s.onEnroll(authPub)
 				}
