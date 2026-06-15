@@ -290,7 +290,7 @@ The daemon replies on the same channel:
 | hello    | `{"type":"hello","name":"<Mac name>","osVersion":"<macOS version>","paired":true}` |
 | sims     | `{"type":"sims","sims":[{"udid":..,"name":..,"state":..,"os_version":..}, …]}` |
 | booted   | `{"type":"booted","udid":"<udid>"}` |
-| shutdown | `{"type":"shutdown","udid":"<udid>"}` |
+| shutdown | `{"type":"shutdown","udid":"<udid>"}` (if it was the streaming sim, a `detached` is sent first) |
 | attached | `{"type":"attached","w":<points>,"h":<points>}` (the simulator's screen size) |
 | detached | `{"type":"detached"}` |
 | error    | `{"type":"error","msg":"<reason>","code":"<machine code>"}` |

@@ -116,7 +116,11 @@ func (d *rtcDispatch) doShutdown(udid string) {
 	current := d.att != nil && d.att.udid == udid
 	d.mu.Unlock()
 	if current {
+		// Tear down the feed AND tell the client it ended, so its attachment
+		// state doesn't go stale (mirrors doDetach's "detached" contract) —
+		// otherwise the video just goes silent and a later detach is a no-op.
 		d.stopAttachment()
+		d.reply(ctrlReply{Type: "detached"})
 	}
 	if err := d.comp.Shutdown(d.baseCtx, udid); err != nil {
 		d.reply(ctrlReply{Type: "error", Msg: err.Error()})

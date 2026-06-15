@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kei-sidorov/simcast/internal/companion"
+	"github.com/kei-sidorov/simcast/internal/idb"
 )
 
 type stubComp struct {
@@ -132,6 +133,45 @@ func TestDoDetachReplies(t *testing.T) {
 	d.handle([]byte(`{"type":"detach"}`))
 	if len(out) != 1 || out[0].Type != "detached" {
 		t.Fatalf("want one detached reply, got %+v", out)
+	}
+}
+
+// Shutting down the simulator that is currently being streamed must both tear
+// down the feed AND emit "detached" before "shutdown", so the client's
+// attachment state doesn't go stale (a silent video with a no-op detach).
+func TestDoShutdownOfCurrentFeedDetaches(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{}
+	d := newTestDispatch(c, &out)
+	// Pretend "ABC" is the live feed. Sidecar.Close()/cancel are no-ops here.
+	d.att = &attachment{cancel: func() {}, sidecar: &idb.Sidecar{}, udid: "ABC"}
+
+	d.handle([]byte(`{"type":"shutdown","udid":"ABC"}`))
+
+	if len(out) != 2 || out[0].Type != "detached" || out[1].Type != "shutdown" {
+		t.Fatalf("want [detached, shutdown], got %+v", out)
+	}
+	if d.att != nil {
+		t.Fatalf("feed should be torn down, att still set")
+	}
+}
+
+// Shutting down a DIFFERENT simulator than the one streaming must leave the feed
+// (and its attachment state) untouched — only a plain "shutdown" reply.
+func TestDoShutdownOfOtherSimLeavesFeed(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{}
+	d := newTestDispatch(c, &out)
+	att := &attachment{cancel: func() {}, sidecar: &idb.Sidecar{}, udid: "ABC"}
+	d.att = att
+
+	d.handle([]byte(`{"type":"shutdown","udid":"XYZ"}`))
+
+	if len(out) != 1 || out[0].Type != "shutdown" || out[0].UDID != "XYZ" {
+		t.Fatalf("want single shutdown reply for XYZ, got %+v", out)
+	}
+	if d.att != att {
+		t.Fatalf("feed for ABC should be left untouched")
 	}
 }
 
