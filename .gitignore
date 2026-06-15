@@ -9,7 +9,8 @@
 # Locally-built command binaries (go build ./...)
 /simcastd
 /simcast-signal
-/simcast.db       # default SQLite store path
+# default SQLite store path
+/simcast.db
 
 # macOS
 .DS_Store
