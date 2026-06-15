@@ -87,9 +87,11 @@ func usage(w *os.File) {
 // version (sw_vers -productVersion) for the pairing hello. Best-effort: any
 // failure yields an empty string and the client simply omits that subtitle.
 func macHostInfo() (name, osVersion string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Each command gets its own short timeout so a hung scutil can't starve
+	// sw_vers (and vice versa), and neither can stall daemon startup for long.
 	run := func(bin string, args ...string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 		out, err := exec.CommandContext(ctx, bin, args...).Output()
 		if err != nil {
 			return ""
