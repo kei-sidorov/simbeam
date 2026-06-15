@@ -182,10 +182,17 @@ The broker relays the join to the daemon as a **connect**:
 The daemon recomputes the same HMAC with its secret `S`. If it matches and the pairing window
 is still open, the daemon **pins** `clientPubKey` — it saves the client's public key to its
 trusted list (`~/.simcast/clients.json`). From now on, this client is recognized and the
-pairing window is burned (one-time use).
+pairing window is burned (one-time use). If that save fails, the daemon refuses the connection
+rather than pretending to pair, so a client is never told it paired when it didn't.
 
 After pinning, the client still completes the normal key challenge (next section) to finish the
-connection. A revoked device is removed with `simcastd unpair <clientPubKey>`.
+connection. The client knows the pin **stuck** when it receives the `hello` greeting with
+`paired: true` on the control channel (see [the live session](#the-live-session-control-and-video)).
+A client should treat pairing as **confirmed only on that `hello`**: if it saved the Mac
+optimistically on scan but the connection drops before `hello` arrives, the pin may not have
+landed — discard and re-pair rather than leaving a Mac that's saved on the client but unknown to
+the daemon (and therefore permanently unreachable). A revoked device is removed with
+`simcastd unpair <clientPubKey>`.
 
 That's pairing: a one-time, secret-gated introduction that ends with **the daemon trusting the
 client's public key** and **the client trusting the daemon's public key**. Neither secret nor
@@ -264,6 +271,7 @@ replies back. The client sends:
 |---------|-------|---------|
 | list    | `{"type":"list"}` | enumerate the Mac's simulators |
 | boot    | `{"type":"boot","udid":"<udid>"}` | power on a simulator |
+| shutdown| `{"type":"shutdown","udid":"<udid>"}` | power off a simulator |
 | attach  | `{"type":"attach","udid":"<udid>"}` | start streaming this simulator's screen |
 | detach  | `{"type":"detach"}` | stop streaming |
 | tap     | `{"type":"tap","x":0.5,"y":0.5}` | tap at normalized [0,1] coordinates |
@@ -279,16 +287,47 @@ The daemon replies on the same channel:
 
 | Reply | Shape |
 |-------|-------|
+| hello    | `{"type":"hello","name":"<Mac name>","osVersion":"<macOS version>","paired":true}` |
 | sims     | `{"type":"sims","sims":[{"udid":..,"name":..,"state":..,"os_version":..}, …]}` |
 | booted   | `{"type":"booted","udid":"<udid>"}` |
+| shutdown | `{"type":"shutdown","udid":"<udid>"}` |
 | attached | `{"type":"attached","w":<points>,"h":<points>}` (the simulator's screen size) |
 | detached | `{"type":"detached"}` |
-| error    | `{"type":"error","msg":"<reason>"}` |
+| error    | `{"type":"error","msg":"<reason>","code":"<machine code>"}` |
+
+**The `hello` greeting** is the **first** message the daemon sends, pushed *unsolicited* the
+moment the client opens the `control` channel (before any command). It carries:
+
+- `name` — the Mac's display name (e.g. `"Kirill's MacBook Pro"`), for the UI subtitle.
+- `osVersion` — the macOS version (e.g. `"26.5"`). Note the field is **`osVersion`** (camelCase),
+  *not* the `os_version` used inside a simulator's `sims` entry.
+- `paired: true` — an explicit **pin-acknowledgement**. Reaching the control channel is only
+  possible past the key challenge, which an enrolling client clears only after the daemon has
+  durably saved its key. So a `hello` is proof the pairing actually took (see
+  [Pairing](#pairing)). Either string field may be absent if the daemon couldn't read it; the
+  client just omits that subtitle.
 
 **Video — an H.264 track** flows from daemon to client. The track is negotiated up front but stays
 **silent until you `attach` a simulator**. On `attach`, the daemon starts capturing that simulator
 and pushing H.264; on `detach` (or a new `attach`), it stops. You don't renegotiate the WebRTC
 session to switch simulators — the video track just goes quiet and resumes.
+
+### Error codes
+
+Every `error` message — whether from the broker during signalling or from the daemon over the
+control channel — carries a human-readable `msg` **and** a stable machine `code`. Branch on
+`code`, not on the text of `msg` (the text may change). The codes:
+
+| `code` | Sent by | Meaning |
+|--------|---------|---------|
+| `offline`      | broker | The target Mac's daemon is not currently registered. Wake the Mac and retry. |
+| `pair_expired` | daemon | The pairing window expired (TTL passed) or was cancelled. Generate a fresh QR. |
+| `pair_used`    | daemon | The one-time pairing secret was already consumed by a successful pairing. Generate a fresh QR. |
+| `pair_invalid` | daemon | No pairing window is open, or the enrollment proof didn't match. |
+
+`pair_*` codes accompany a rejected `join`/`connect` during pairing; `offline` comes back when you
+`join` a Mac that isn't online. An `error` with no `code` is a generic failure (e.g. a control
+command that failed for some operational reason) — surface its `msg`.
 
 ---
 
@@ -389,9 +428,10 @@ Rules and behavior:
 2. **Watch presence** — open a `watch` socket to see which paired Macs are online. (No auth.)
 3. **Subscribe (optional)** — `POST /v1/subscription` so TURN relay is available on strict networks.
 4. **Connect** — `join` an online Mac, pass the key challenge, exchange offer/answer, verify the
-   daemon's signature.
-5. **Use it** — over the P2P link: `list` / `boot` / `attach` a simulator, watch H.264, send taps,
-   swipes, Home, keys. `detach` or close to end.
+   daemon's signature. On the control channel the daemon greets you with `hello` (Mac name, macOS
+   version, and `paired: true`).
+5. **Use it** — over the P2P link: `list` / `boot` / `shutdown` / `attach` a simulator, watch
+   H.264, send taps, swipes, Home, keys. `detach` or close to end.
 
 ---
 
