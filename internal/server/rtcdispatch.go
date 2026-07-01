@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"sync"
 	"time"
 
@@ -80,6 +81,8 @@ func (d *rtcDispatch) handle(data []byte) {
 		d.reply(ctrlReply{Type: "detached"})
 	case "tap", "home", "swipe", "key":
 		d.doInput(m)
+	case "shake":
+		d.doShake()
 	}
 }
 
@@ -137,6 +140,24 @@ func (d *rtcDispatch) doInput(m controlMsg) {
 		return // no simulator attached → ignore input
 	}
 	applyControl(d.baseCtx, att.client, att.screen, m)
+}
+
+// doShake triggers a shake gesture on the currently attached simulator. Shake is
+// a gesture like tap/home, so it targets the sim the client is viewing (its udid)
+// rather than taking one off the wire, and it is fire-and-forget: no attachment
+// is a silent no-op and a failure is only logged. It runs through simctl (see
+// companion.Shake) rather than idb HID, but deliberately mirrors the HID gestures'
+// contract — an error reply would wrongly drop the client's UI to "disconnected".
+func (d *rtcDispatch) doShake() {
+	d.mu.Lock()
+	att := d.att
+	d.mu.Unlock()
+	if att == nil {
+		return // no simulator attached → ignore, matching doInput
+	}
+	if err := d.comp.Shake(d.baseCtx, att.udid); err != nil {
+		log.Printf("shake: %v", err)
+	}
 }
 
 func (d *rtcDispatch) reply(v ctrlReply) {

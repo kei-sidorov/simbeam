@@ -17,6 +17,8 @@ type stubComp struct {
 	bootErr     error
 	shutdown    []string
 	shutdownErr error
+	shook       []string
+	shakeErr    error
 }
 
 func (c *stubComp) List(context.Context) ([]companion.Simulator, error) {
@@ -29,6 +31,10 @@ func (c *stubComp) Boot(_ context.Context, udid string) error {
 func (c *stubComp) Shutdown(_ context.Context, udid string) error {
 	c.shutdown = append(c.shutdown, udid)
 	return c.shutdownErr
+}
+func (c *stubComp) Shake(_ context.Context, udid string) error {
+	c.shook = append(c.shook, udid)
+	return c.shakeErr
 }
 
 // newTestDispatch returns a dispatcher whose replies are captured into *out.
@@ -198,5 +204,52 @@ func TestInputBeforeAttachIgnored(t *testing.T) {
 	d.handle([]byte(`{"type":"tap","x":0.5,"y":0.5}`))
 	if len(out) != 0 {
 		t.Fatalf("tap before attach should produce no reply, got %+v", out)
+	}
+}
+
+func TestDoShakeBeforeAttachIgnored(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{}
+	d := newTestDispatch(c, &out)
+	// No attachment → shake is a silent no-op like the other gestures: no reply,
+	// and the companion is never reached.
+	d.handle([]byte(`{"type":"shake"}`))
+	if len(out) != 0 {
+		t.Fatalf("shake before attach should produce no reply, got %+v", out)
+	}
+	if len(c.shook) != 0 {
+		t.Fatalf("Shake should not be called, got %v", c.shook)
+	}
+}
+
+// shake is fire-and-forget like tap/home/swipe/key: it reaches the companion for
+// the attached sim but sends no reply — an error reply would wrongly drop the
+// iOS client's UI to "disconnected".
+func TestDoShakeShakesAttachedSimWithoutReply(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{}
+	d := newTestDispatch(c, &out)
+	d.att = &attachment{cancel: func() {}, sidecar: &idb.Sidecar{}, udid: "ABC"}
+
+	d.handle([]byte(`{"type":"shake"}`))
+
+	if len(out) != 0 {
+		t.Fatalf("shake should produce no reply, got %+v", out)
+	}
+	if len(c.shook) != 1 || c.shook[0] != "ABC" {
+		t.Fatalf("Shake(ABC) not called, got %v", c.shook)
+	}
+}
+
+func TestDoShakeErrorIsSwallowed(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{shakeErr: errors.New("boom")}
+	d := newTestDispatch(c, &out)
+	d.att = &attachment{cancel: func() {}, sidecar: &idb.Sidecar{}, udid: "ABC"}
+
+	d.handle([]byte(`{"type":"shake"}`))
+
+	if len(out) != 0 {
+		t.Fatalf("shake failure must not reply (would disconnect the client), got %+v", out)
 	}
 }

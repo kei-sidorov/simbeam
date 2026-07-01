@@ -235,6 +235,20 @@ func (c *Client) Shutdown(ctx context.Context, udid string) error {
 	return nil
 }
 
+// Shake triggers a shake gesture on the booted simulator with the given UDID.
+// simctl has no shake subcommand and idb_companion's HID surface only models
+// touches/buttons/swipes, so neither of the usual input paths reach it. Instead
+// the gesture is a Darwin notification, com.apple.UIKit.SimulatorShake, that
+// UIKit inside the simulated process observes — the very signal Simulator.app
+// posts for Device ▸ Shake. We post it headlessly with
+// `simctl spawn <udid> notifyutil -p com.apple.UIKit.SimulatorShake`, so no
+// Simulator.app window (we boot sims headless) and no private CoreSimulator
+// framework are needed. A spawn into a non-booted UDID fails, surfacing as err.
+func (c *Client) Shake(ctx context.Context, udid string) error {
+	_, err := c.runSimctl(ctx, "spawn", udid, "notifyutil", "-p", "com.apple.UIKit.SimulatorShake")
+	return err
+}
+
 // run executes idb_companion with the given args and returns its stdout. The
 // objc warning and CoreSimulator diagnostics are emitted on stderr, which is
 // only surfaced when the command fails.

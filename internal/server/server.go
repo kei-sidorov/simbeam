@@ -20,6 +20,7 @@ type Companion interface {
 	List(ctx context.Context) ([]companion.Simulator, error)
 	Boot(ctx context.Context, udid string) error
 	Shutdown(ctx context.Context, udid string) error
+	Shake(ctx context.Context, udid string) error
 }
 
 // Server drives the WebRTC rendezvous over a Companion plus the idb_companion

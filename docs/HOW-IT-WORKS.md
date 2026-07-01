@@ -278,6 +278,7 @@ replies back. The client sends:
 | swipe   | `{"type":"swipe","x1":..,"y1":..,"x2":..,"y2":..,"duration":<sec>}` | drag |
 | home    | `{"type":"home"}` | press the Home button |
 | key     | `{"type":"key","key":"<KeyboardEvent.key>"}` | a hardware key press |
+| shake   | `{"type":"shake"}` | shake the attached simulator (e.g. to trigger Shake to Undo); fire-and-forget, no reply |
 
 Coordinates are **normalized 0–1** relative to the displayed frame; the daemon scales them to the
 simulator's logical points. (Keyboard input sends physical HID key codes — the actual character is

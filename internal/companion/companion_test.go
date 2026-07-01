@@ -80,6 +80,36 @@ func TestShutdownFailureIncludesStderr(t *testing.T) {
 	}
 }
 
+// Shake has no simctl subcommand of its own; it must spawn notifyutil to post
+// the com.apple.UIKit.SimulatorShake Darwin notification into the sim. Lock the
+// exact command so the notification name (the crux of the gesture) can't drift.
+func TestShakePostsSimulatorShakeNotification(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args")
+	c := fakeSimctl(t, "echo \"$@\" > "+argsFile+"\nexit 0\n")
+	if err := c.Shake(context.Background(), "UDID-123"); err != nil {
+		t.Fatalf("Shake returned error: %v", err)
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "simctl spawn UDID-123 notifyutil -p com.apple.UIKit.SimulatorShake"
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("simctl args = %q, want %q", strings.TrimSpace(string(got)), want)
+	}
+}
+
+func TestShakeFailureIncludesStderr(t *testing.T) {
+	c := fakeSimctl(t, "echo 'Unable to spawn: device not booted' 1>&2\nexit 1\n")
+	err := c.Shake(context.Background(), "BAD")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "device not booted") {
+		t.Fatalf("error %q does not include stderr", err)
+	}
+}
+
 func TestListParsesAndFilters(t *testing.T) {
 	c := fakeSimctl(t, "cat <<'EOF'\n"+sampleDevicesJSON+"\nEOF\n")
 	sims, err := c.List(context.Background())
