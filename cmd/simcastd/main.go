@@ -2,6 +2,8 @@
 //   - list: print the real simulators on this machine (Phase 0 bootstrap).
 //   - serve: run the REST API + WebSocket stream server (Phase 1); with --signal,
 //     persistent remote rendezvous with P-keypress pairing (Phase 3C).
+//   - demo: stream a headless-browser demo device instead of simulators —
+//     Linux-friendly, unattended, multi-use pairing (App Review / demos).
 //   - unpair: revoke a paired client (Phase 3C).
 package main
 
@@ -21,6 +23,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/kei-sidorov/simcast/internal/backend/browser"
 	"github.com/kei-sidorov/simcast/internal/backend/sim"
 	"github.com/kei-sidorov/simcast/internal/companion"
 	"github.com/kei-sidorov/simcast/internal/server"
@@ -57,6 +60,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "demo":
+		if err := runDemo(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "unpair":
 		if err := runUnpair(args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -79,6 +87,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  simcastd list    List available iOS simulators via idb_companion")
 	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
+	fmt.Fprintln(w, "  simcastd demo    Serve a headless-browser demo device instead of a simulator (flags: --signal, --url, --chrome, --pair-secret, ...)")
 	fmt.Fprintln(w, "  simcastd unpair  Revoke a paired client: simcastd unpair <clientPubKey>")
 	fmt.Fprintln(w, "  simcastd version Print the version")
 	fmt.Fprintln(w, "  simcastd help    Show this help")
@@ -139,6 +148,100 @@ func runServe(argv []string) error {
 		fmt.Printf("debug client: http://localhost%s/\n", *addr)
 	}
 	return http.ListenAndServe(*addr, srv.Handler())
+}
+
+// runDemo runs the daemon with the headless-browser demo backend instead of
+// real simulators: a Linux-friendly, always-on demo device (App Review, try
+// before you buy). Unlike serve, pairing is not an interactive one-time window:
+// the window is armed at startup with a long-lived secret and re-armed after
+// every enrollment, so the printed pairing URL stays valid for any number of
+// clients (the demo box is throwaway — this trades the serve mode's anti-abuse
+// single-use property for unattended operation).
+func runDemo(argv []string) error {
+	fs := flag.NewFlagSet("demo", flag.ExitOnError)
+	signalURL := fs.String("signal", defaultSignalURL, "signaling broker WS URL (required; e.g. wss://host/ws)")
+	demoURL := fs.String("url", "", "page the demo device renders (required)")
+	chrome := fs.String("chrome", "", "path to the Chromium/Chrome binary; empty = auto-detect")
+	noSandbox := fs.Bool("chrome-no-sandbox", false, "pass --no-sandbox to Chromium (needed only when running as root)")
+	name := fs.String("name", "simcast demo", "device/host name shown in the client")
+	addr := fs.String("addr", ":8080", "listen address for the local debug client (only with --web)")
+	webDir := fs.String("web", "", "directory with the browser debug client (served at /); empty = none")
+	clientURL := fs.String("client-url", "", "base URL of the client for the pairing link; empty = http://localhost<addr>/")
+	identityPath := fs.String("identity", defaultStatePath("demo-identity.key"), "path to the demo daemon's persistent Ed25519 identity")
+	clientsPath := fs.String("clients", defaultStatePath("demo-clients.json"), "path to the pinned-clients store")
+	pairSecret := fs.String("pair-secret", "", "fixed pairing secret; empty = $SIMCAST_PAIR_SECRET, else generated per run")
+	_ = fs.Parse(argv)
+
+	if *signalURL == "" {
+		return fmt.Errorf("demo needs a broker: pass --signal wss://host/ws")
+	}
+	if *demoURL == "" {
+		return fmt.Errorf("demo needs a page to render: pass --url https://...")
+	}
+
+	backend := browser.New(browser.Options{
+		URL:       *demoURL,
+		ExecPath:  *chrome,
+		NoSandbox: *noSandbox,
+		Name:      *name,
+	})
+	srv := server.New(backend, *webDir).WithHost(*name, "demo")
+
+	id, err := server.LoadOrCreateIdentity(*identityPath)
+	if err != nil {
+		return fmt.Errorf("identity: %w", err)
+	}
+	pinned, err := server.LoadPinnedStore(*clientsPath)
+	if err != nil {
+		return fmt.Errorf("pinned store: %w", err)
+	}
+
+	secret := *pairSecret
+	if secret == "" {
+		secret = os.Getenv("SIMCAST_PAIR_SECRET")
+	}
+	if secret == "" {
+		if secret, err = signal.NewPairingSecret(); err != nil {
+			return fmt.Errorf("pairing secret: %w", err)
+		}
+	}
+
+	// Effectively-infinite TTL; verify() consumes the window on each successful
+	// enrollment, so OnEnroll re-arms it with the same secret (multi-use).
+	const demoTTL = 100 * 365 * 24 * time.Hour
+	win := server.NewPairingWindow()
+	win.Open(secret, time.Now(), demoTTL)
+	srv.OnEnroll(func(clientPubKey string) {
+		log.Printf("demo: paired client %.16s…", clientPubKey)
+		win.Open(secret, time.Now(), demoTTL)
+	})
+
+	base := *clientURL
+	if base == "" {
+		base = "http://localhost" + *addr + "/"
+	}
+	if *webDir != "" {
+		ln, lerr := net.Listen("tcp", *addr)
+		if lerr != nil {
+			return fmt.Errorf("local http listen on %s: %w", *addr, lerr)
+		}
+		go func() {
+			if err := http.Serve(ln, srv.Handler()); err != nil {
+				log.Printf("local http: %v", err)
+			}
+		}()
+	}
+
+	pairURL := signal.PairingURL(base, *signalURL, id.PubB64, secret)
+	fmt.Printf("simcastd demo mode — broker: %s\n", *signalURL)
+	fmt.Printf("daemonID: %s\n", id.PubB64)
+	fmt.Printf("demo page: %s\n", *demoURL)
+	fmt.Printf("\nPairing URL (multi-use, survives restarts only with a fixed --pair-secret):\n\n  %s\n\n", pairURL)
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		printPairingQR(os.Stdout, pairURL)
+	}
+
+	return srv.ServeSignal(context.Background(), *signalURL, id, pinned, win)
 }
 
 // runRemote loads the daemon's persistent identity + pinned clients, serves the
