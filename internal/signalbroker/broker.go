@@ -154,7 +154,7 @@ func (b *Broker) serveDaemon(c *conn, reg signal.Msg) {
 
 	// Ping/pong liveness: catches a half-open TCP from a hard Mac sleep that a
 	// clean close (handled by the read loop below) would not.
-	stopKA := keepalive(c)
+	stopKA := keepalive(c, presencePingInterval)
 	defer stopKA()
 
 	defer func() {
@@ -225,6 +225,14 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 		// proof/offer into this new client's session on the shared daemon conn.
 		_ = old.c.ws.Close()
 	}
+
+	// Keep the client socket warm through the long non-trickle ICE-gather window
+	// (proof → offer sits idle for seconds; see clientPingInterval). Without this
+	// an aggressive client-side NAT/idle timer can drop the socket before the
+	// offer is sent, surfacing as a socket error on the client. Fast ping so a
+	// ping lands inside the gather window; clients auto-pong.
+	stopKA := keepalive(c, clientPingInterval)
+	defer stopKA()
 
 	defer func() {
 		d.mu.Lock()

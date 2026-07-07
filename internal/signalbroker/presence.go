@@ -16,6 +16,13 @@ const (
 	presencePingInterval = 10 * time.Second
 	presenceReadTimeout  = 25 * time.Second
 	presenceWriteTimeout = 5 * time.Second
+	// clientPingInterval is faster than presencePingInterval because a client's
+	// signaling socket sits idle for the whole non-trickle ICE gather (up to
+	// ~15s) between proof and offer. A public-IP demo daemon makes this gather
+	// slow (~8s), and an aggressive NAT/idle timer on the client can drop the
+	// socket in that silent window → the offer send then fails with a socket
+	// error. Pinging every 5s keeps at least one frame flowing through the gather.
+	clientPingInterval = 5 * time.Second
 )
 
 // watcher is one client observing a set of daemonIDs over a presence WS.
@@ -83,7 +90,7 @@ func (b *Broker) serveWatcher(c *conn, first signal.Msg) {
 		b.mu.Unlock()
 	}()
 
-	stop := keepalive(c)
+	stop := keepalive(c, presencePingInterval)
 	defer stop()
 
 	// Watchers send nothing after `watch`; read only to detect the close.
@@ -117,17 +124,18 @@ func (b *Broker) notifyPresence(id string, online bool) {
 }
 
 // keepalive arms ping/pong liveness on a long-lived conn: it sets a read deadline
-// that each pong extends, and pings on an interval. It detects a half-open TCP
-// (hard Mac sleep) that a clean close would not. Returns a stop func to halt the
-// pinger; call it when the read loop exits.
-func keepalive(c *conn) (stop func()) {
+// that each pong extends, and pings every pingInterval. It detects a half-open
+// TCP (hard Mac sleep) that a clean close would not, and keeps the socket warm
+// through idle windows (e.g. a client's ICE gather). Returns a stop func to halt
+// the pinger; call it when the read loop exits.
+func keepalive(c *conn, pingInterval time.Duration) (stop func()) {
 	_ = c.ws.SetReadDeadline(time.Now().Add(presenceReadTimeout))
 	c.ws.SetPongHandler(func(string) error {
 		return c.ws.SetReadDeadline(time.Now().Add(presenceReadTimeout))
 	})
 	done := make(chan struct{})
 	go func() {
-		t := time.NewTicker(presencePingInterval)
+		t := time.NewTicker(pingInterval)
 		defer t.Stop()
 		for {
 			select {
