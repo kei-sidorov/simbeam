@@ -76,6 +76,25 @@ unprivileged unit user (Ubuntu ≥23.10 restricts user namespaces for non-apt
 binaries), prefer the distro `chromium` package; `--chrome-no-sandbox` in
 `SIMCAST_DEMO_ARGS` is the last resort.
 
+**Firewall — REQUIRED for the demo (and easy to miss).** Unlike a Mac daemon
+behind home NAT (which only makes outbound connections), the demo daemon runs on
+the VPS's *public* IP, so the client must reach its WebRTC media directly. pion
+gathers its host candidate on a random port from the OS ephemeral range
+(`/proc/sys/net/ipv4/ip_local_port_range`, typically 32768–60999). If ufw is on
+and that range is closed, connections fail intermittently — a client sees
+`direct connect failed` / a stalled offer whenever pion happens to pick a blocked
+port. Open the ephemeral UDP range:
+
+```bash
+ufw allow 32768:60999/udp comment 'pion ICE host candidates (demo daemon)'
+# verify the OS range matches: sysctl net.ipv4.ip_local_port_range
+```
+
+(The broker/coturn rules — `443/tcp`, `3478,5349/tcp,udp`, `49152:65535/udp`
+relay — are separate and already needed for TURN.) A tighter alternative to the
+wide range is to pin pion to a small dedicated range in code and open only that;
+not yet done — see the roadmap.
+
 ## ICE entries the browser receives
 
 | Entry | When | Cost |
