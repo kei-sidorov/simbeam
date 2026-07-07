@@ -25,18 +25,17 @@ type ctrlReply struct {
 }
 
 // rtcDispatch is the per-session control plane. It owns at most one video
-// "attachment" (a spawned sidecar + ffmpeg pump) and routes inbound control
-// messages: management (list/boot/attach/detach) and input (tap/swipe/...).
+// "attachment" (a live backend Feed) and routes inbound control messages:
+// management (list/boot/attach/detach) and input (tap/swipe/...).
 //
 // It depends on plain func values (send, writeFrame) rather than *rtc.Session
 // so management/input logic is unit-testable without a live pion handshake.
 //
 // handle() runs on pion's DataChannel goroutine; boot/attach block it briefly
-// (sidecar spawn waits for readiness). Acceptable for the debug/local scope —
-// revisit if it stalls input during attach.
+// (backend.Attach waits for feed readiness). Acceptable for the debug/local
+// scope — revisit if it stalls input during attach.
 type rtcDispatch struct {
-	comp       Companion
-	binary     string
+	backend    Backend
 	baseCtx    context.Context
 	send       func([]byte)
 	writeFrame func([]byte, time.Duration) error
@@ -87,7 +86,7 @@ func (d *rtcDispatch) handle(data []byte) {
 }
 
 func (d *rtcDispatch) doList() {
-	sims, err := d.comp.List(d.baseCtx)
+	sims, err := d.backend.List(d.baseCtx)
 	if err != nil {
 		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
 		return
@@ -100,7 +99,7 @@ func (d *rtcDispatch) doBoot(udid string) {
 		d.reply(ctrlReply{Type: "error", Msg: "boot: missing udid"})
 		return
 	}
-	if err := d.comp.Boot(d.baseCtx, udid); err != nil {
+	if err := d.backend.Boot(d.baseCtx, udid); err != nil {
 		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
 		return
 	}
@@ -125,7 +124,7 @@ func (d *rtcDispatch) doShutdown(udid string) {
 		d.stopAttachment()
 		d.reply(ctrlReply{Type: "detached"})
 	}
-	if err := d.comp.Shutdown(d.baseCtx, udid); err != nil {
+	if err := d.backend.Shutdown(d.baseCtx, udid); err != nil {
 		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
 		return
 	}
@@ -139,7 +138,7 @@ func (d *rtcDispatch) doInput(m controlMsg) {
 	if att == nil {
 		return // no simulator attached → ignore input
 	}
-	applyControl(d.baseCtx, att.client, att.screen, m)
+	att.feed.Input(d.baseCtx, m.input())
 }
 
 // doShake triggers a shake gesture on the currently attached simulator. Shake is
@@ -155,7 +154,7 @@ func (d *rtcDispatch) doShake() {
 	if att == nil {
 		return // no simulator attached → ignore, matching doInput
 	}
-	if err := d.comp.Shake(d.baseCtx, att.udid); err != nil {
+	if err := d.backend.Shake(d.baseCtx, att.udid); err != nil {
 		log.Printf("shake: %v", err)
 	}
 }

@@ -1,12 +1,8 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-
-	"github.com/kei-sidorov/simcast/internal/idb"
 )
 
 // controlMsg is an inbound message from the client — over the WebRTC "control"
@@ -24,34 +20,15 @@ type controlMsg struct {
 	Key      string  `json:"key"`
 }
 
-// applyControl dispatches one parsed control message to the idb client, scaling
-// touch coordinates against the simulator screen.
-func applyControl(ctx context.Context, client *idb.Client, screen idb.Screen, m controlMsg) {
-	switch m.Type {
-	case "tap":
-		if err := client.Tap(ctx, idb.ScaleTap(m.X, m.Y, screen)); err != nil {
-			log.Printf("tap: %v", err)
-		}
-	case "home":
-		if err := client.Home(ctx); err != nil {
-			log.Printf("home: %v", err)
-		}
-	case "swipe":
-		dur := m.Duration
-		if dur <= 0 {
-			dur = 0.3
-		}
-		start := idb.ScaleTap(m.X1, m.Y1, screen)
-		end := idb.ScaleTap(m.X2, m.Y2, screen)
-		if err := client.Swipe(ctx, start, end, dur); err != nil {
-			log.Printf("swipe: %v", err)
-		}
-	case "key":
-		if usage, shift, ok := keyUsage(m.Key); ok {
-			if err := client.KeyPress(ctx, usage, shift); err != nil {
-				log.Printf("key: %v", err)
-			}
-		}
+// input converts the wire message into the backend-facing Input (the gesture
+// fields verbatim; management fields like UDID are handled by rtcDispatch).
+func (m controlMsg) input() Input {
+	return Input{
+		Type: m.Type,
+		X:    m.X, Y: m.Y,
+		X1: m.X1, Y1: m.Y1, X2: m.X2, Y2: m.Y2,
+		Duration: m.Duration,
+		Key:      m.Key,
 	}
 }
 

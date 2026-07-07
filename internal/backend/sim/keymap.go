@@ -1,4 +1,4 @@
-package server
+package sim
 
 // keyUsage maps a KeyboardEvent.key string to a USB HID usage code and a
 // shift flag. Returns ok=false for unsupported keys (e.g. F-keys, IME).

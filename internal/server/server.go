@@ -4,45 +4,28 @@
 // The only HTTP surface is the optional static debug client (--web); there is no
 // unauthenticated streaming or management endpoint — all video/input/lifecycle
 // requires a paired client.
+//
+// The device being streamed is abstracted behind Backend (see backend.go): real
+// simulators on macOS, a headless browser for the hosted demo.
 package server
 
-import (
-	"context"
-	"net/http"
+import "net/http"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-)
-
-// Companion is the simulator lifecycle surface the server needs (satisfied by
-// *companion.Client). list/boot run over the authenticated control DataChannel
-// (see rtcDispatch), not over HTTP.
-type Companion interface {
-	List(ctx context.Context) ([]companion.Simulator, error)
-	Boot(ctx context.Context, udid string) error
-	Shutdown(ctx context.Context, udid string) error
-	Shake(ctx context.Context, udid string) error
-}
-
-// Server drives the WebRTC rendezvous over a Companion plus the idb_companion
-// binary path.
+// Server drives the WebRTC rendezvous over a Backend.
 type Server struct {
-	comp      Companion
-	binary    string                    // path to idb_companion for sidecars; "" → "idb_companion"
+	backend   Backend
 	webDir    string                    // static debug client dir; "" → not served
 	onEnroll  func(clientPubKey string) // fired when a new client enrolls via the pairing window; nil → no-op
-	hostName  string                    // Mac display name, pushed in the hello (e.g. "Kirill's MacBook Pro"); "" → omitted
-	osVersion string                    // macOS version, pushed in the hello (e.g. "26.5"); "" → omitted
+	hostName  string                    // host display name, pushed in the hello (e.g. "Kirill's MacBook Pro"); "" → omitted
+	osVersion string                    // host OS version, pushed in the hello (e.g. "26.5"); "" → omitted
 }
 
 // New creates a Server. webDir is served at / when non-empty.
-func New(comp Companion, webDir string) *Server {
-	return &Server{comp: comp, webDir: webDir, binary: "idb_companion"}
+func New(backend Backend, webDir string) *Server {
+	return &Server{backend: backend, webDir: webDir}
 }
 
-// WithBinary overrides the idb_companion path used for sidecars.
-func (s *Server) WithBinary(bin string) *Server { s.binary = bin; return s }
-
-// WithHost sets the Mac display name and macOS version the daemon pushes in the
+// WithHost sets the host display name and OS version the daemon pushes in the
 // per-session hello (so a paired client can show "Kirill's MacBook Pro" /
 // "macOS 26.5"). Either may be empty, in which case the client omits it.
 func (s *Server) WithHost(name, osVersion string) *Server {

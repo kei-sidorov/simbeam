@@ -21,6 +21,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/kei-sidorov/simcast/internal/backend/sim"
 	"github.com/kei-sidorov/simcast/internal/companion"
 	"github.com/kei-sidorov/simcast/internal/server"
 	"github.com/kei-sidorov/simcast/internal/signal"
@@ -127,7 +128,7 @@ func runServe(argv []string) error {
 		return err
 	}
 	hostName, osVersion := macHostInfo()
-	srv := server.New(c, *webDir).WithBinary(path).WithHost(hostName, osVersion)
+	srv := server.New(sim.New(c, path), *webDir).WithHost(hostName, osVersion)
 
 	if *signalURL != "" {
 		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir, *identityPath, *clientsPath, *pairTTL)

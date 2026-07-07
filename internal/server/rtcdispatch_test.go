@@ -7,8 +7,19 @@ import (
 	"testing"
 
 	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/idb"
+	"github.com/kei-sidorov/simcast/internal/encoder"
 )
+
+// stubFeed is an inert Feed that records the input routed to it.
+type stubFeed struct {
+	w, h   uint64
+	inputs []Input
+}
+
+func (f *stubFeed) Screen() (uint64, uint64)         { return f.w, f.h }
+func (f *stubFeed) Frames() <-chan encoder.Frame     { return nil }
+func (f *stubFeed) Input(_ context.Context, i Input) { f.inputs = append(f.inputs, i) }
+func (f *stubFeed) Close() error                     { return nil }
 
 type stubComp struct {
 	sims        []companion.Simulator
@@ -19,6 +30,20 @@ type stubComp struct {
 	shutdownErr error
 	shook       []string
 	shakeErr    error
+	feed        *stubFeed
+	attachErr   error
+	attached    []string
+}
+
+func (c *stubComp) Attach(_ context.Context, udid string) (Feed, error) {
+	c.attached = append(c.attached, udid)
+	if c.attachErr != nil {
+		return nil, c.attachErr
+	}
+	if c.feed == nil {
+		c.feed = &stubFeed{}
+	}
+	return c.feed, nil
 }
 
 func (c *stubComp) List(context.Context) ([]companion.Simulator, error) {
@@ -38,9 +63,9 @@ func (c *stubComp) Shake(_ context.Context, udid string) error {
 }
 
 // newTestDispatch returns a dispatcher whose replies are captured into *out.
-func newTestDispatch(comp Companion, out *[]ctrlReply) *rtcDispatch {
+func newTestDispatch(backend Backend, out *[]ctrlReply) *rtcDispatch {
 	return &rtcDispatch{
-		comp:    comp,
+		backend: backend,
 		baseCtx: context.Background(),
 		send: func(b []byte) {
 			var r ctrlReply
@@ -149,8 +174,8 @@ func TestDoShutdownOfCurrentFeedDetaches(t *testing.T) {
 	var out []ctrlReply
 	c := &stubComp{}
 	d := newTestDispatch(c, &out)
-	// Pretend "ABC" is the live feed. Sidecar.Close()/cancel are no-ops here.
-	d.att = &attachment{cancel: func() {}, sidecar: &idb.Sidecar{}, udid: "ABC"}
+	// Pretend "ABC" is the live feed. Feed.Close()/cancel are no-ops here.
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{}, udid: "ABC"}
 
 	d.handle([]byte(`{"type":"shutdown","udid":"ABC"}`))
 
@@ -168,7 +193,7 @@ func TestDoShutdownOfOtherSimLeavesFeed(t *testing.T) {
 	var out []ctrlReply
 	c := &stubComp{}
 	d := newTestDispatch(c, &out)
-	att := &attachment{cancel: func() {}, sidecar: &idb.Sidecar{}, udid: "ABC"}
+	att := &attachment{cancel: func() {}, feed: &stubFeed{}, udid: "ABC"}
 	d.att = att
 
 	d.handle([]byte(`{"type":"shutdown","udid":"XYZ"}`))
@@ -194,6 +219,53 @@ func TestSendHelloCarriesHostInfo(t *testing.T) {
 	}
 	if !out[0].Paired {
 		t.Fatalf("hello must carry paired:true (pin-ack), got %+v", out[0])
+	}
+}
+
+// doAttach must ask the backend for a feed and reply "attached" with the feed's
+// screen dimensions.
+func TestDoAttachRepliesWithFeedScreen(t *testing.T) {
+	var out []ctrlReply
+	c := &stubComp{feed: &stubFeed{w: 100, h: 200}}
+	d := newTestDispatch(c, &out)
+
+	d.handle([]byte(`{"type":"attach","udid":"ABC"}`))
+
+	if len(c.attached) != 1 || c.attached[0] != "ABC" {
+		t.Fatalf("Attach(ABC) not called, got %v", c.attached)
+	}
+	if len(out) != 1 || out[0].Type != "attached" || out[0].W != 100 || out[0].H != 200 {
+		t.Fatalf("want attached reply 100x200, got %+v", out)
+	}
+}
+
+func TestDoAttachBackendErrorReply(t *testing.T) {
+	var out []ctrlReply
+	d := newTestDispatch(&stubComp{attachErr: errors.New("boom")}, &out)
+	d.handle([]byte(`{"type":"attach","udid":"ABC"}`))
+	if len(out) != 1 || out[0].Type != "error" {
+		t.Fatalf("want one error reply, got %+v", out)
+	}
+}
+
+// Gestures must be routed to the live feed with the wire fields intact.
+func TestInputRoutedToFeed(t *testing.T) {
+	var out []ctrlReply
+	d := newTestDispatch(&stubComp{}, &out)
+	feed := &stubFeed{}
+	d.att = &attachment{cancel: func() {}, feed: feed, udid: "ABC"}
+
+	d.handle([]byte(`{"type":"tap","x":0.25,"y":0.75}`))
+	d.handle([]byte(`{"type":"key","key":"Enter"}`))
+
+	if len(feed.inputs) != 2 {
+		t.Fatalf("want 2 inputs routed to feed, got %+v", feed.inputs)
+	}
+	if in := feed.inputs[0]; in.Type != "tap" || in.X != 0.25 || in.Y != 0.75 {
+		t.Fatalf("tap not routed verbatim, got %+v", in)
+	}
+	if in := feed.inputs[1]; in.Type != "key" || in.Key != "Enter" {
+		t.Fatalf("key not routed verbatim, got %+v", in)
 	}
 }
 
@@ -229,7 +301,7 @@ func TestDoShakeShakesAttachedSimWithoutReply(t *testing.T) {
 	var out []ctrlReply
 	c := &stubComp{}
 	d := newTestDispatch(c, &out)
-	d.att = &attachment{cancel: func() {}, sidecar: &idb.Sidecar{}, udid: "ABC"}
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{}, udid: "ABC"}
 
 	d.handle([]byte(`{"type":"shake"}`))
 
@@ -245,7 +317,7 @@ func TestDoShakeErrorIsSwallowed(t *testing.T) {
 	var out []ctrlReply
 	c := &stubComp{shakeErr: errors.New("boom")}
 	d := newTestDispatch(c, &out)
-	d.att = &attachment{cancel: func() {}, sidecar: &idb.Sidecar{}, udid: "ABC"}
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{}, udid: "ABC"}
 
 	d.handle([]byte(`{"type":"shake"}`))
 
