@@ -338,6 +338,18 @@ func printPairingQR(w io.Writer, url string) {
 	})
 }
 
+// installRawModeLogWriter routes the standard logger through crlfWriter for as
+// long as the terminal is in raw mode. term.MakeRaw disables the terminal's
+// output post-processing (OPOST), so a bare "\n" from log.Printf (e.g. the
+// signaling reconnect line) no longer returns the cursor to column 0 and lines
+// staircase rightward. Returns a restore func to reinstate the previous writer
+// when raw mode is released.
+func installRawModeLogWriter() (restore func()) {
+	prev := log.Writer()
+	log.SetOutput(&crlfWriter{w: prev})
+	return func() { log.SetOutput(prev) }
+}
+
 // crlfWriter rewrites bare "\n" to "\r\n" so terminal output lines up under a TTY
 // in raw mode (where "\n" moves down but not to column 0).
 type crlfWriter struct{ w io.Writer }
@@ -432,6 +444,7 @@ func watchKeys(ctx context.Context, cancel context.CancelFunc, onPair, onCancel 
 		return
 	}
 	defer term.Restore(fd, old)
+	defer installRawModeLogWriter()()
 
 	buf := make([]byte, 1)
 	for {
