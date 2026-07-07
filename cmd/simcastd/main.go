@@ -129,6 +129,7 @@ func runServe(argv []string) error {
 	identityPath := fs.String("identity", defaultStatePath("identity.key"), "path to the daemon's persistent Ed25519 identity")
 	clientsPath := fs.String("clients", defaultStatePath("clients.json"), "path to the pinned-clients store")
 	pairTTL := fs.Duration("pair-ttl", 5*time.Minute, "how long an enrollment window stays open after pressing P")
+	verbose := fs.Bool("v", false, "verbose logging: log every broker reconnect attempt, not just offline/online transitions")
 	_ = fs.Parse(argv)
 
 	c := companion.New()
@@ -137,7 +138,7 @@ func runServe(argv []string) error {
 		return err
 	}
 	hostName, osVersion := macHostInfo()
-	srv := server.New(sim.New(c, path), *webDir).WithHost(hostName, osVersion)
+	srv := server.New(sim.New(c, path), *webDir).WithHost(hostName, osVersion).WithVerbose(*verbose)
 
 	if *signalURL != "" {
 		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir, *identityPath, *clientsPath, *pairTTL)
@@ -170,6 +171,7 @@ func runDemo(argv []string) error {
 	identityPath := fs.String("identity", defaultStatePath("demo-identity.key"), "path to the demo daemon's persistent Ed25519 identity")
 	clientsPath := fs.String("clients", defaultStatePath("demo-clients.json"), "path to the pinned-clients store")
 	pairSecret := fs.String("pair-secret", "", "fixed pairing secret; empty = $SIMCAST_PAIR_SECRET, else generated per run")
+	verbose := fs.Bool("v", false, "verbose logging: log every broker reconnect attempt, not just offline/online transitions")
 	_ = fs.Parse(argv)
 
 	if *signalURL == "" {
@@ -185,7 +187,7 @@ func runDemo(argv []string) error {
 		NoSandbox: *noSandbox,
 		Name:      *name,
 	})
-	srv := server.New(backend, *webDir).WithHost(*name, "demo")
+	srv := server.New(backend, *webDir).WithHost(*name, "demo").WithVerbose(*verbose)
 
 	id, err := server.LoadOrCreateIdentity(*identityPath)
 	if err != nil {

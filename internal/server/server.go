@@ -18,6 +18,7 @@ type Server struct {
 	onEnroll  func(clientPubKey string) // fired when a new client enrolls via the pairing window; nil → no-op
 	hostName  string                    // host display name, pushed in the hello (e.g. "Kirill's MacBook Pro"); "" → omitted
 	osVersion string                    // host OS version, pushed in the hello (e.g. "26.5"); "" → omitted
+	verbose   bool                      // -v: log every broker reconnect attempt, not just transitions
 }
 
 // New creates a Server. webDir is served at / when non-empty.
@@ -32,6 +33,11 @@ func (s *Server) WithHost(name, osVersion string) *Server {
 	s.hostName, s.osVersion = name, osVersion
 	return s
 }
+
+// WithVerbose toggles verbose reconnect logging: when true the daemon logs every
+// broker reconnect attempt (cause + backoff); when false it logs only offline/
+// online transitions, so routine sleep/wake churn stays quiet.
+func (s *Server) WithVerbose(v bool) *Server { s.verbose = v; return s }
 
 // OnEnroll registers a callback fired (with the client's public key) the moment a
 // not-yet-pinned client completes pairing — i.e. the single-use window was just

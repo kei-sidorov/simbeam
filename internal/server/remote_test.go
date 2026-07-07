@@ -1,10 +1,64 @@
 package server
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/kei-sidorov/simcast/internal/signal"
 )
+
+// TestReconnLogTransitionsOnly checks the default (non-verbose) narrative: one
+// line when the daemon first drops off the broker, silence through the retry
+// churn, one line when it recovers.
+func TestReconnLogTransitionsOnly(t *testing.T) {
+	var lines []string
+	rl := &reconnLog{logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
+
+	rl.up()                                                   // first connect of the run — silent
+	rl.lost(fmt.Errorf("reset"), time.Second, 14*time.Minute) // drop → announce once
+	rl.lost(fmt.Errorf("dial"), 2*time.Second, 0)             // failed retry — silent
+	rl.lost(fmt.Errorf("dial"), 4*time.Second, 0)             // failed retry — silent
+	rl.up()                                                   // recovered → announce once
+	rl.lost(fmt.Errorf("reset"), time.Second, 5*time.Minute)  // next drop → announce again
+
+	want := []string{
+		"broker connection lost (up 14m0s) — reconnecting",
+		"broker back online",
+		"broker connection lost (up 5m0s) — reconnecting",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("want %d lines %q, got %d %q", len(want), want, len(lines), lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("line %d: want %q, got %q", i, want[i], lines[i])
+		}
+	}
+}
+
+// TestReconnLogVerbose checks that -v restores a line for every attempt, with the
+// cause and backoff.
+func TestReconnLogVerbose(t *testing.T) {
+	var lines []string
+	rl := &reconnLog{verbose: true, logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
+
+	rl.lost(fmt.Errorf("read: reset"), time.Second, time.Minute)
+	rl.lost(fmt.Errorf("dial: refused"), 2*time.Second, 0)
+
+	want := []string{
+		"signaling connection lost: read: reset; reconnecting in 1s",
+		"signaling connection lost: dial: refused; reconnecting in 2s",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("want %d lines, got %d: %q", len(want), len(lines), lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("line %d: want %q, got %q", i, want[i], lines[i])
+		}
+	}
+}
 
 func TestToWebRTCConvertsICEServers(t *testing.T) {
 	in := []signal.ICEServer{

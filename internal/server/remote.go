@@ -44,9 +44,10 @@ func signedAnswer(sdp string, priv ed25519.PrivateKey) signal.Msg {
 // is cancelled.
 func (s *Server) ServeSignal(ctx context.Context, signalURL string, id Identity, pinned *PinnedStore, win *pairingWindow) error {
 	backoff := time.Second
+	rl := &reconnLog{logf: log.Printf, verbose: s.verbose}
 	for ctx.Err() == nil {
 		start := time.Now()
-		err := s.serveOnce(ctx, signalURL, id, pinned, win)
+		err := s.serveOnce(ctx, signalURL, id, pinned, win, rl.up)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -56,7 +57,7 @@ func (s *Server) ServeSignal(ctx context.Context, signalURL string, id Identity,
 		if time.Since(start) > 30*time.Second {
 			backoff = time.Second
 		}
-		log.Printf("signaling connection lost: %v; reconnecting in %s", err, backoff)
+		rl.lost(err, backoff, time.Since(start))
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
@@ -69,11 +70,47 @@ func (s *Server) ServeSignal(ctx context.Context, signalURL string, id Identity,
 	return ctx.Err()
 }
 
+// reconnLog renders the broker reconnect narrative. By default it reports only
+// state transitions — one line when the daemon first drops off the broker, one
+// when it comes back — so routine Mac sleep/wake churn doesn't fill the console.
+// With -v (verbose) it logs every failed attempt with its cause and backoff, as
+// the daemon always did. logf is injected (log.Printf in production) so the line
+// sequence is unit-testable without a broker.
+type reconnLog struct {
+	logf    func(format string, args ...any)
+	verbose bool
+	down    bool // currently in the announced-offline state
+}
+
+// up marks the connection live (called after a successful register). It announces
+// recovery only if we had previously announced going offline; the first connect
+// of a run stays silent because the startup banner already reported presence.
+func (r *reconnLog) up() {
+	if r.down {
+		r.logf("broker back online")
+		r.down = false
+	}
+}
+
+// lost records a dropped connection. Verbose logs every attempt; the default logs
+// a single "offline" line on the healthy→down transition and then stays quiet
+// through the retry backoff until up() reports recovery.
+func (r *reconnLog) lost(err error, backoff, upFor time.Duration) {
+	if r.verbose {
+		r.logf("signaling connection lost: %v; reconnecting in %s", err, backoff)
+		return
+	}
+	if !r.down {
+		r.logf("broker connection lost (up %s) — reconnecting", upFor.Round(time.Second))
+		r.down = true
+	}
+}
+
 // serveOnce holds one broker connection: register, then process the relayed
 // handshake for a single active client at a time. The live P2P peer runs in
 // pion's own goroutines; the broker WS stays open for the next client (revises
 // #51: signaling is now persistent presence, not handshake-then-close).
-func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, pinned *PinnedStore, win *pairingWindow) error {
+func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, pinned *PinnedStore, win *pairingWindow, onUp func()) error {
 	ws, _, err := websocket.DefaultDialer.DialContext(ctx, signalURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial signaling: %w", err)
@@ -86,6 +123,9 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 	if err := send(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon, Daemon: id.PubB64}); err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
+	// Dialed and announced presence on the broker: we're live. Reports recovery
+	// if a prior drop had been announced.
+	onUp()
 
 	// Single active client session state.
 	var (
