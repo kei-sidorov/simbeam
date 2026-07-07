@@ -31,13 +31,19 @@ const UDID = "demo"
 
 // Options configure the demo device.
 type Options struct {
-	URL       string  // page loaded as the demo "device" screen (required)
-	ExecPath  string  // chromium/chrome binary; "" → chromedp's default lookup
-	Width     int     // viewport width in CSS px; 0 → 390 (iPhone-ish portrait)
-	Height    int     // viewport height in CSS px; 0 → 844
-	Scale     float64 // deviceScaleFactor; 0 → 2 (frame = CSS size × Scale px)
-	Name      string  // device name shown in the client's simulator list; "" → "Demo device"
-	NoSandbox bool    // pass --no-sandbox (required when Chromium runs as root)
+	URL      string // page loaded as the demo "device" screen (required)
+	ExecPath string // chromium/chrome binary; "" → chromedp's default lookup
+	Width    int    // viewport width in CSS px; 0 → 390 (iPhone-ish portrait); must be even
+	Height   int    // viewport height in CSS px; 0 → 844; must be even
+	// Scale is the deviceScaleFactor; 0 → 1. Values above 1 are NOT safe:
+	// a few seconds after load Chrome starts dividing CDP input coordinates
+	// by the scale (touches and their synthesized clicks land at css/Scale —
+	// observed on 150.x, both touch and mouse dispatch), so taps miss. At 1,
+	// CSS px == device px and the transform is the identity; the stream is
+	// encoded 1:1 (no ffmpeg halving) at the same final resolution.
+	Scale     float64
+	Name      string // device name shown in the client's simulator list; "" → "Demo device"
+	NoSandbox bool   // pass --no-sandbox (required when Chromium runs as root)
 }
 
 // Backend serves one always-"Booted" demo device rendered by headless Chromium.
@@ -54,7 +60,7 @@ func New(opts Options) *Backend {
 		opts.Height = 844
 	}
 	if opts.Scale <= 0 {
-		opts.Scale = 2
+		opts.Scale = 1
 	}
 	if opts.Name == "" {
 		opts.Name = "Demo device"
@@ -90,7 +96,12 @@ func (b *Backend) Attach(ctx context.Context, udid string) (server.Feed, error) 
 		return nil, err
 	}
 
-	allocOpts := chromedp.DefaultExecAllocatorOptions[:]
+	// Window size must match the emulated CSS viewport: with the default
+	// headless window (800×600) Chrome fit-scales the oversized emulated frame,
+	// and dispatched touches / their synthesized clicks land at scaled-down
+	// coordinates (observed: exactly halved at Scale=2) — taps miss.
+	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.WindowSize(b.opts.Width, b.opts.Height))
 	if b.opts.ExecPath != "" {
 		allocOpts = append(allocOpts, chromedp.ExecPath(b.opts.ExecPath))
 	}
@@ -146,7 +157,7 @@ func (b *Backend) Attach(ctx context.Context, udid string) (server.Feed, error) 
 		}
 	}()
 
-	frames, err := encoder.Encode(ctx, png, fps)
+	frames, err := encoder.EncodeFullRes(ctx, png, fps)
 	if err != nil {
 		cancelAll()
 		return nil, err

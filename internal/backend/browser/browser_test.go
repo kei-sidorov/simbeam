@@ -29,18 +29,18 @@ func TestAttachRejectsUnknownUDID(t *testing.T) {
 
 func TestOptionDefaultsAndScreen(t *testing.T) {
 	b := New(Options{URL: "https://example.com"})
-	if b.opts.Width != 390 || b.opts.Height != 844 || b.opts.Scale != 2 {
+	if b.opts.Width != 390 || b.opts.Height != 844 || b.opts.Scale != 1 {
 		t.Fatalf("defaults not applied: %+v", b.opts)
 	}
 	f := &feed{opts: b.opts}
-	if w, h := f.Screen(); w != 780 || h != 1688 {
-		t.Fatalf("Screen() = %dx%d, want 780x1688 (CSS × Scale)", w, h)
+	if w, h := f.Screen(); w != 390 || h != 844 {
+		t.Fatalf("Screen() = %dx%d, want 390x844 (CSS × Scale)", w, h)
 	}
 }
 
 // Coordinate mapping feeds CDP in CSS pixels, clamped to the viewport.
 func TestCSSCoordinateMapping(t *testing.T) {
-	f := &feed{opts: Options{Width: 400, Height: 800, Scale: 2}}
+	f := &feed{opts: Options{Width: 400, Height: 800, Scale: 1}}
 	if x, y := f.css(0.5, 0.25); x != 200 || y != 200 {
 		t.Fatalf("css(0.5,0.25) = (%v,%v), want (200,200)", x, y)
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 func TestFFmpegArgs(t *testing.T) {
-	got := strings.Join(ffmpegArgs(15), " ")
+	got := strings.Join(ffmpegArgs(15, true), " ")
 	for _, want := range []string{
 		"-analyzeduration 0", encoderName(), "-g 30",
 		"-framerate 15", "-f h264", "-flush_packets 1",
@@ -27,7 +27,7 @@ func TestFFmpegArgsGOPCoupling(t *testing.T) {
 		{15, "-g 30", "-framerate 15"},
 		{30, "-g 60", "-framerate 30"},
 	} {
-		got := strings.Join(ffmpegArgs(tc.fps), " ")
+		got := strings.Join(ffmpegArgs(tc.fps, true), " ")
 		if !strings.Contains(got, tc.wantG) || !strings.Contains(got, tc.wantFR) {
 			t.Fatalf("fps=%d: want %q and %q in: %s", tc.fps, tc.wantG, tc.wantFR, got)
 		}
@@ -37,5 +37,15 @@ func TestFFmpegArgsGOPCoupling(t *testing.T) {
 func TestAvailableSkipIfMissing(t *testing.T) {
 	if err := Available(); err != nil {
 		t.Skipf("ffmpeg/h264_videotoolbox not available: %v", err)
+	}
+}
+
+func TestFFmpegArgsFullRes(t *testing.T) {
+	got := strings.Join(ffmpegArgs(15, false), " ")
+	if strings.Contains(got, "scale=") {
+		t.Fatalf("full-res args must not scale: %s", got)
+	}
+	if !strings.Contains(got, encoderName()) {
+		t.Fatalf("missing encoder in: %s", got)
 	}
 }

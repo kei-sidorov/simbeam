@@ -47,8 +47,8 @@ func TestLiveAttachStreamsFrames(t *testing.T) {
 	}
 	defer feed.Close()
 
-	if w, h := feed.Screen(); w != 780 || h != 1688 {
-		t.Fatalf("Screen() = %dx%d, want 780x1688", w, h)
+	if w, h := feed.Screen(); w != 390 || h != 844 {
+		t.Fatalf("Screen() = %dx%d, want 390x844", w, h)
 	}
 
 	// The pipeline must produce a keyframe quickly and keep producing frames.

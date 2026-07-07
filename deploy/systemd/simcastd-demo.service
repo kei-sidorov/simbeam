@@ -8,6 +8,8 @@ Type=simple
 User=simcast
 Group=simcast
 EnvironmentFile=/etc/simcast/demo.env
+# Chromium insists on a writable HOME even with an explicit user-data-dir.
+Environment=HOME=/var/lib/simcast
 # SIMCAST_PAIR_SECRET is read by the daemon itself (keeps the pairing URL
 # stable across restarts); the rest of the configuration rides in the args.
 ExecStart=/usr/local/bin/simcastd demo $SIMCAST_DEMO_ARGS
