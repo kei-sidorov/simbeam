@@ -77,16 +77,33 @@ func nalType(nal []byte) byte {
 // isVCL reports whether a NAL type carries coded slice data (types 1..5).
 func isVCL(t byte) bool { return t >= 1 && t <= 5 }
 
-// startsNewAU reports whether a NAL of this type begins a new access unit: an
-// access-unit delimiter (9), a parameter set / SEI that prefixes a picture
-// (7/8/6), or a coded slice (1..5). Placing the boundary BEFORE these keeps an
-// IDR together with its SPS/PPS in one sample (decision №38).
-func startsNewAU(t byte) bool {
+// vclStartsPicture reports whether a coded-slice NAL begins a new picture: its
+// first_mb_in_slice — the first ue(v) field of the slice header — is 0. ue(v)=0
+// is encoded as the single bit '1', so the first payload bit is set exactly for
+// a picture's first slice; continuation slices carry a nonzero first_mb_in_slice
+// (leading '0' bit). This matters for libx264: -tune zerolatency enables
+// sliced-threads, emitting several slice NALs per picture, and only the first
+// may open a new access unit (videotoolbox emits one slice per picture, so
+// there this always reports true).
+func vclStartsPicture(nal []byte) bool {
+	sc := startCodeLen(nal)
+	if sc == 0 || sc+1 >= len(nal) {
+		return true // malformed/truncated: fall back to the per-VCL boundary
+	}
+	return nal[sc+1]&0x80 != 0
+}
+
+// startsNewAU reports whether this NAL begins a new access unit: an access-unit
+// delimiter (9), a parameter set / SEI that prefixes a picture (7/8/6), or the
+// FIRST coded slice of a picture (1..5 with first_mb_in_slice==0). Placing the
+// boundary BEFORE these keeps an IDR together with its SPS/PPS in one sample
+// (decision №38) and keeps all slices of one picture in one sample.
+func startsNewAU(nal []byte, t byte) bool {
 	switch {
 	case t == 6 || t == 7 || t == 8 || t == 9:
 		return true
 	case isVCL(t):
-		return true
+		return vclStartsPicture(nal)
 	default:
 		return false
 	}
@@ -110,7 +127,7 @@ type auAssembler struct {
 func (a *auAssembler) push(nal []byte) []byte {
 	var done []byte
 	t := nalType(nal)
-	if a.hasVCL && startsNewAU(t) {
+	if a.hasVCL && startsNewAU(nal, t) {
 		done = flatten(a.cur)
 		a.cur = nil
 		a.hasVCL = false

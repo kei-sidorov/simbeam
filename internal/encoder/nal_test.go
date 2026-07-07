@@ -60,12 +60,12 @@ func TestNALTypeAndVCL(t *testing.T) {
 
 func TestAUAssemblerKeyframeGrouping(t *testing.T) {
 	p := func(b ...byte) []byte { return append([]byte{0, 0, 0, 1}, b...) }
-	pSlice := p(0x41, 0x01) // type 1 (VCL, non-IDR)
+	pSlice := p(0x41, 0x81) // type 1 (VCL, non-IDR)
 	sps := p(0x67, 0x02)    // type 7
 	pps := p(0x68, 0x03)    // type 8
 	sei := p(0x06, 0x04)    // type 6
-	idr := p(0x65, 0x05)    // type 5 (VCL, IDR)
-	next := p(0x41, 0x06)   // type 1 — opens the AU AFTER the keyframe
+	idr := p(0x65, 0x85)    // type 5 (VCL, IDR)
+	next := p(0x41, 0x86)   // type 1 — opens the AU AFTER the keyframe
 
 	var a auAssembler
 	// First P-frame: no flush yet.
@@ -93,8 +93,8 @@ func TestAUAssemblerKeyframeGrouping(t *testing.T) {
 
 func TestAUAssemblerBackToBackKeyframes(t *testing.T) {
 	p := func(b ...byte) []byte { return append([]byte{0, 0, 0, 1}, b...) }
-	sps1, pps1, idr1 := p(0x67, 0x01), p(0x68, 0x02), p(0x65, 0x03)
-	sps2, pps2, idr2 := p(0x67, 0x04), p(0x68, 0x05), p(0x65, 0x06)
+	sps1, pps1, idr1 := p(0x67, 0x01), p(0x68, 0x02), p(0x65, 0x83)
+	sps2, pps2, idr2 := p(0x67, 0x04), p(0x68, 0x05), p(0x65, 0x86)
 
 	var a auAssembler
 	for _, n := range [][]byte{sps1, pps1, idr1} {
@@ -113,5 +113,50 @@ func TestAUAssemblerBackToBackKeyframes(t *testing.T) {
 		if au := a.push(n); au != nil {
 			t.Fatalf("second keyframe should still accumulate, flushed % x", au)
 		}
+	}
+}
+
+// x264's -tune zerolatency enables sliced-threads: several slice NALs per
+// picture. All slices of one picture must land in ONE access unit — only a
+// slice with first_mb_in_slice==0 (leading payload bit set) opens a new AU.
+// Regression test for the "green frame" artifact: each slice used to be
+// emitted as its own frame.
+func TestAUAssemblerMultiSlicePicture(t *testing.T) {
+	p := func(b ...byte) []byte { return append([]byte{0, 0, 0, 1}, b...) }
+	sps := p(0x67, 0x01)
+	pps := p(0x68, 0x02)
+	idrS0 := p(0x65, 0x88) // IDR slice 0: first_mb_in_slice==0 (MSB set)
+	idrS1 := p(0x65, 0x22) // IDR slice 1: continuation (MSB clear)
+	idrS2 := p(0x65, 0x11) // IDR slice 2: continuation
+	pS0 := p(0x41, 0x9A)   // next picture, slice 0
+	pS1 := p(0x41, 0x3C)   // next picture, slice 1
+
+	var a auAssembler
+	for _, n := range [][]byte{sps, pps, idrS0, idrS1, idrS2} {
+		if au := a.push(n); au != nil {
+			t.Fatalf("keyframe slices should accumulate into one AU, flushed % x", au)
+		}
+	}
+	// First slice of the NEXT picture flushes the whole keyframe AU.
+	au := a.push(pS0)
+	want := bytes.Join([][]byte{sps, pps, idrS0, idrS1, idrS2}, nil)
+	if !bytes.Equal(au, want) {
+		t.Fatalf("keyframe AU = % x\nwant % x", au, want)
+	}
+	// Continuation slice of the same picture must NOT flush.
+	if au := a.push(pS1); au != nil {
+		t.Fatalf("continuation slice must not flush, got % x", au)
+	}
+}
+
+func TestVCLStartsPicture(t *testing.T) {
+	if !vclStartsPicture([]byte{0, 0, 0, 1, 0x65, 0x88}) {
+		t.Fatal("slice with first_mb_in_slice==0 must start a picture")
+	}
+	if vclStartsPicture([]byte{0, 0, 1, 0x41, 0x22}) {
+		t.Fatal("continuation slice must not start a picture")
+	}
+	if !vclStartsPicture([]byte{0, 0, 0, 1, 0x65}) {
+		t.Fatal("truncated slice falls back to starting a picture")
 	}
 }
