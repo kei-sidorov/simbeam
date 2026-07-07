@@ -14,6 +14,18 @@ builds:
     # in the URL; no page/Caddy hosting required.
     ldflags:
       - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simcast.sidorov.tech/ws
+  # Linux build of the same daemon: runs `simcastd demo` (headless-browser demo
+  # device) on a VPS. Separate build/archive id so the Homebrew cask below keeps
+  # picking up only the darwin archives.
+  - id: simcastd-linux
+    main: ./cmd/simcastd
+    binary: simcastd
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simcast.sidorov.tech/ws
   - id: simcast-signal
     main: ./cmd/simcast-signal
     binary: simcast-signal
@@ -27,6 +39,9 @@ builds:
 archives:
   - id: simcastd
     ids: [simcastd]
+    name_template: "simcastd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: simcastd-linux
+    ids: [simcastd-linux]
     name_template: "simcastd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
   - id: simcast-signal
     ids: [simcast-signal]

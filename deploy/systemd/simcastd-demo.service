@@ -1,0 +1,23 @@
+[Unit]
+Description=simcast demo daemon (headless-browser demo device)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=simcast
+Group=simcast
+EnvironmentFile=/etc/simcast/demo.env
+# SIMCAST_PAIR_SECRET is read by the daemon itself (keeps the pairing URL
+# stable across restarts); the rest of the configuration rides in the args.
+ExecStart=/usr/local/bin/simcastd demo $SIMCAST_DEMO_ARGS
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=simcast
+WorkingDirectory=/var/lib/simcast
+
+[Install]
+WantedBy=multi-user.target

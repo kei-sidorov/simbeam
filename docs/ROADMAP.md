@@ -109,6 +109,26 @@ Homebrew-дистрибуцию, Postgres (через `Store`).
 
 ---
 
+## Phase 5 — Demo backend (App Review / try-before-you-buy) — done
+
+Проблема: ревьюеру Apple (и любому «просто посмотреть») нужен работающий
+endpoint без Mac-сетапа. Решение — интерактивное демо-устройство из headless-браузера.
+
+- **Рефакторинг**: устройство за интерфейсами `server.Backend`/`server.Feed`;
+  вся idb-механика уехала в `internal/backend/sim`. Сессионный слой бэкенда не знает.
+- **`internal/backend/browser`**: headless Chromium (chromedp) с mobile-эмуляцией;
+  скриншот-полл → тот же ffmpeg-пайплайн; tap/swipe/key → CDP-события; Home → стартовый URL.
+- **encoder**: `h264_videotoolbox` на darwin, `libx264` (ultrafast+zerolatency) на остальных.
+- **`simcastd demo`**: unattended-режим — pairing-окно с фиксированным секретом,
+  перевзводится после каждого энролла (multi-use URL для App Review notes).
+- **Дистрибуция**: GoReleaser собирает `simcastd` и под linux (amd64/arm64);
+  `deploy/systemd/simcastd-demo.service` + `demo.env.example`; cask на Mac не тронут.
+
+**DoD (выполнено):** локальный брокер + `simcastd demo` + три реальных Chrome-клиента
+через web/debug — энролл по одному URL, attach, декодированное видео 390×844 по WebRTC.
+
+---
+
 ### Вне скоупа этого репозитория
 **Нативный iPad-клиент** (Swift + GoogleWebRTC, рендер трека, жесты, сканер QR, маппинг
 координат/повороты/letterboxing) делается **в отдельном репозитории** и **только когда серверная

@@ -49,6 +49,33 @@ To ship a new server version, just push a git tag `vX.Y.Z` — the timer pulls i
 within ~10 min. Full operational runbook (timing, observing, failure modes,
 rollback, what does *not* auto-update): see [`UPDATING.md`](UPDATING.md).
 
+## Optional: the demo daemon (`simcastd demo`)
+
+The same VPS can host an interactive **demo device** — a headless Chromium tab
+streamed exactly like a simulator (App Review, try-before-you-buy). No macOS
+required:
+
+```bash
+apt-get install -y chromium ffmpeg
+# grab the linux simcastd from the same GitHub release the updater uses:
+curl -fsSL -o /tmp/simcastd.tgz \
+  "https://github.com/kei-sidorov/simcast/releases/latest/download/simcastd_<version>_linux_amd64.tar.gz"
+tar -xzf /tmp/simcastd.tgz -C /usr/local/bin simcastd
+
+cp deploy/systemd/simcastd-demo.service /etc/systemd/system/
+cp deploy/demo.env.example /etc/simcast/demo.env && chmod 600 /etc/simcast/demo.env
+# edit /etc/simcast/demo.env: broker URL, demo page URL, a fixed SIMCAST_PAIR_SECRET
+systemctl daemon-reload && systemctl enable --now simcastd-demo
+journalctl -u simcastd-demo --no-pager | grep -A3 "Pairing URL"
+```
+
+The logged pairing URL is **multi-use** (the enrollment window re-arms after every
+pairing) and stable across restarts thanks to the fixed secret — put it in App
+Review notes or a "try the demo" button. If Chromium refuses to start under the
+unprivileged unit user (Ubuntu ≥23.10 restricts user namespaces for non-apt
+binaries), prefer the distro `chromium` package; `--chrome-no-sandbox` in
+`SIMCAST_DEMO_ARGS` is the last resort.
+
 ## ICE entries the browser receives
 
 | Entry | When | Cost |

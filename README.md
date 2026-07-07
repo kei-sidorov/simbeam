@@ -88,6 +88,24 @@ with `simcastd unpair <clientPubKey>`. The daemon's identity lives in `~/.simcas
 > Want to drive it from a browser instead of the native client? Run with `--web ./web/debug`
 > and open the printed pairing URL — a reference debug client implements the full WebRTC flow.
 
+## Demo mode (no Mac required)
+
+`simcastd demo` streams a **headless Chromium tab** instead of a simulator — an
+always-on interactive demo device for App Review notes and try-before-you-buy.
+It runs anywhere Chromium and ffmpeg run, including a Linux VPS (H.264 via
+`libx264` there, `h264_videotoolbox` on macOS):
+
+```bash
+simcastd demo --signal wss://your-broker/ws --url https://your-demo-page \
+              --pair-secret "$(openssl rand -base64 24)"
+```
+
+Pairing in demo mode is unattended and **multi-use**: the printed pairing URL
+enrolls any number of clients and (with a fixed `--pair-secret`) survives
+restarts. Taps, swipes and the keyboard are injected as real browser touch/key
+events; Home returns to the start page. See [`deploy/README.md`](deploy/README.md)
+for running it as a systemd unit next to the broker.
+
 ## The signalling server
 
 The broker is a lightweight rendezvous point. It:
