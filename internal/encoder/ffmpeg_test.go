@@ -8,9 +8,9 @@ import (
 func TestFFmpegArgs(t *testing.T) {
 	got := strings.Join(ffmpegArgs(15), " ")
 	for _, want := range []string{
-		"-analyzeduration 0", "h264_videotoolbox", "-g 30",
+		"-analyzeduration 0", encoderName(), "-g 30",
 		"-framerate 15", "-f h264", "-flush_packets 1",
-		"-vf scale=iw/2:ih/2",
+		"-vf scale=iw/2:ih/2", "-profile:v baseline",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("ffmpegArgs missing %q in: %s", want, got)

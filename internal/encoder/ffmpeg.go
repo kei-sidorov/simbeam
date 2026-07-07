@@ -6,14 +6,24 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const encoderName = "h264_videotoolbox"
+// encoderName returns the H.264 encoder for this platform: hardware
+// videotoolbox on macOS (the sim backend's home), software x264 everywhere else
+// (the Linux demo daemon — no hardware encoder to rely on, and the demo's
+// halved frame is cheap enough for x264 ultrafast).
+func encoderName() string {
+	if runtime.GOOS == "darwin" {
+		return "h264_videotoolbox"
+	}
+	return "libx264"
+}
 
-// Available reports whether ffmpeg and the h264_videotoolbox encoder are present.
+// Available reports whether ffmpeg and this platform's H.264 encoder are present.
 func Available() error {
 	path, err := exec.LookPath("ffmpeg")
 	if err != nil {
@@ -23,28 +33,38 @@ func Available() error {
 	if err != nil {
 		return fmt.Errorf("ffmpeg -encoders: %w", err)
 	}
-	if !strings.Contains(string(out), encoderName) {
-		return fmt.Errorf("ffmpeg has no %s encoder", encoderName)
+	if !strings.Contains(string(out), encoderName()) {
+		return fmt.Errorf("ffmpeg has no %s encoder", encoderName())
 	}
 	return nil
 }
 
-// ffmpegArgs builds the low-latency PNG→H.264 argv (see decision №37). idb's
-// screenshot RPC returns PNG, hence image2pipe/png input. -analyzeduration 0 is
-// critical: it removes the demuxer's startup backlog that otherwise pins ~3s of
-// constant latency. -vf scale=iw/2:ih/2 halves each dimension so keyframes and
-// per-frame payloads are ~4x smaller, cutting encode + transit latency; the
+// ffmpegArgs builds the low-latency PNG→H.264 argv (see decision №37). The
+// screenshot sources emit PNG, hence image2pipe/png input. -analyzeduration 0
+// is critical: it removes the demuxer's startup backlog that otherwise pins ~3s
+// of constant latency. -vf scale=iw/2:ih/2 halves each dimension so keyframes
+// and per-frame payloads are ~4x smaller, cutting encode + transit latency; the
 // browser scales the H.264 back up in <video> (decision №40).
 func ffmpegArgs(fps int) []string {
-	return []string{
+	args := []string{
 		"-hide_banner", "-loglevel", "warning",
 		"-fflags", "nobuffer", "-flags", "low_delay", "-analyzeduration", "0",
 		"-f", "image2pipe", "-vcodec", "png", "-framerate", strconv.Itoa(fps), "-i", "pipe:0",
 		"-an", "-vf", "scale=iw/2:ih/2",
-		"-c:v", encoderName, "-realtime", "1", "-profile:v", "baseline",
-		"-g", strconv.Itoa(fps * 2), "-b:v", "8M", "-pix_fmt", "yuv420p",
-		"-flush_packets", "1", "-max_delay", "0", "-f", "h264", "pipe:1",
+		"-c:v", encoderName(),
 	}
+	// Low-latency knobs are encoder-specific; the shared flags above/below carry
+	// the pipeline contract (short GOP, baseline profile, raw h264 out).
+	if encoderName() == "h264_videotoolbox" {
+		args = append(args, "-realtime", "1")
+	} else {
+		args = append(args, "-preset", "ultrafast", "-tune", "zerolatency")
+	}
+	return append(args,
+		"-profile:v", "baseline",
+		"-g", strconv.Itoa(fps*2), "-b:v", "8M", "-pix_fmt", "yuv420p",
+		"-flush_packets", "1", "-max_delay", "0", "-f", "h264", "pipe:1",
+	)
 }
 
 // Encode spawns ffmpeg, feeds PNG frames from png to its stdin, and emits one
