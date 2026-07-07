@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<!-- simcast demo device page: a touch-friendly tic-tac-toe game. Rendered by
+     the headless Chromium of `simcastd demo` (390×844 CSS viewport, mobile
+     emulation) and streamed to the client; taps arrive as real touch events. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>simcast demo — tic-tac-toe</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-user-select: none; user-select: none; }
+  html, body { height: 100%; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 28px; padding: 24px;
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+    background: linear-gradient(160deg, #10131a 0%, #1c2333 60%, #232c45 100%);
+    color: #e8ecf4;
+  }
+  header { text-align: center; }
+  header h1 { font-size: 28px; font-weight: 700; letter-spacing: .5px; }
+  header p { margin-top: 6px; font-size: 15px; color: #8b95ab; }
+  #status {
+    min-height: 28px; font-size: 20px; font-weight: 600; color: #9fd4ff;
+    transition: color .2s;
+  }
+  #status.win  { color: #7dffa8; }
+  #status.lose { color: #ff8f8f; }
+  #status.draw { color: #ffd479; }
+  #board {
+    display: grid; grid-template-columns: repeat(3, 104px); grid-template-rows: repeat(3, 104px);
+    gap: 10px;
+  }
+  .cell {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 56px; font-weight: 700; line-height: 1;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+    border-radius: 18px; cursor: pointer;
+    transition: background .15s, transform .1s;
+  }
+  .cell:active { background: rgba(255,255,255,.14); transform: scale(.96); }
+  .cell.x { color: #6fb8ff; }
+  .cell.o { color: #ffb36f; }
+  .cell.hit { background: rgba(125,255,168,.18); border-color: rgba(125,255,168,.5); }
+  #newGame {
+    padding: 14px 42px; font-size: 18px; font-weight: 600; color: #10131a;
+    background: #9fd4ff; border: none; border-radius: 14px; cursor: pointer;
+  }
+  #newGame:active { filter: brightness(.85); }
+  #score { font-size: 15px; color: #8b95ab; }
+  footer { position: fixed; bottom: 18px; font-size: 13px; color: #58627a; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Tic-Tac-Toe</h1>
+    <p>You are ✕ — tap a square to play</p>
+  </header>
+  <div id="status">Your move</div>
+  <div id="board"></div>
+  <button id="newGame">New game</button>
+  <div id="score">You 0 · Draws 0 · Device 0</div>
+  <footer>live from a simcast demo device</footer>
+
+<script>
+'use strict';
+const LINES = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+const boardEl = document.getElementById('board');
+const statusEl = document.getElementById('status');
+const scoreEl = document.getElementById('score');
+let cells, board, over, busy;
+const score = { you: 0, draws: 0, device: 0 };
+
+function newGame() {
+  board = Array(9).fill('');
+  over = busy = false;
+  boardEl.innerHTML = '';
+  cells = board.map((_, i) => {
+    const c = document.createElement('div');
+    c.className = 'cell';
+    c.dataset.i = i;
+    c.addEventListener('click', () => humanMove(i));
+    boardEl.appendChild(c);
+    return c;
+  });
+  setStatus('Your move', '');
+}
+
+function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls; }
+
+function humanMove(i) {
+  if (over || busy || board[i]) return;
+  place(i, 'X');
+  if (checkEnd()) return;
+  busy = true;
+  setStatus('Device is thinking…', '');
+  setTimeout(deviceMove, 450); // a visible "thinking" beat reads well on stream
+}
+
+function deviceMove() {
+  busy = false;
+  if (over) return;
+  place(bestMove(), 'O');
+  if (!checkEnd()) setStatus('Your move', '');
+}
+
+function place(i, mark) {
+  board[i] = mark;
+  cells[i].textContent = mark === 'X' ? '✕' : '◯';
+  cells[i].classList.add(mark.toLowerCase());
+}
+
+// bestMove: win if possible, block if needed, then center → corner → side.
+function bestMove() {
+  for (const mark of ['O', 'X']) {
+    for (const [a,b,c] of LINES) {
+      const line = [board[a], board[b], board[c]];
+      if (line.filter(v => v === mark).length === 2 && line.includes('')) {
+        return [a,b,c][line.indexOf('')];
+      }
+    }
+  }
+  for (const i of [4,0,2,6,8,1,3,5,7]) if (!board[i]) return i;
+}
+
+function checkEnd() {
+  for (const [a,b,c] of LINES) {
+    if (board[a] && board[a] === board[b] && board[b] === board[c]) {
+      over = true;
+      [a,b,c].forEach(i => cells[i].classList.add('hit'));
+      if (board[a] === 'X') { score.you++; setStatus('You win! 🎉', 'win'); }
+      else { score.device++; setStatus('Device wins', 'lose'); }
+      renderScore();
+      return true;
+    }
+  }
+  if (board.every(Boolean)) {
+    over = true; score.draws++;
+    setStatus('Draw', 'draw');
+    renderScore();
+    return true;
+  }
+  return false;
+}
+
+function renderScore() {
+  scoreEl.textContent = `You ${score.you} · Draws ${score.draws} · Device ${score.device}`;
+}
+
+document.getElementById('newGame').addEventListener('click', newGame);
+newGame();
+</script>
+</body>
+</html>
