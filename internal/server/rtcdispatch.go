@@ -77,7 +77,7 @@ func (d *rtcDispatch) handle(data []byte) {
 	case "shutdown":
 		d.doShutdown(m.UDID)
 	case "attach":
-		d.doAttach(m.UDID)
+		d.doAttach(m.UDID, m.quality())
 	case "detach":
 		d.stopAttachment()
 		d.reply(ctrlReply{Type: "detached"})

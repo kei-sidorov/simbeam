@@ -42,18 +42,30 @@ func Available() error {
 // ffmpegArgs builds the low-latency PNG→H.264 argv (see decision №37). The
 // screenshot sources emit PNG, hence image2pipe/png input. -analyzeduration 0
 // is critical: it removes the demuxer's startup backlog that otherwise pins ~3s
-// of constant latency. -vf scale=iw/2:ih/2 halves each dimension so keyframes
-// and per-frame payloads are ~4x smaller, cutting encode + transit latency; the
-// browser scales the H.264 back up in <video> (decision №40).
-func ffmpegArgs(fps int, halve bool) []string {
+// of constant latency.
+//
+// scale downsizes each dimension by that factor: at 0.5 keyframes and per-frame
+// payloads are ~4x smaller, cutting encode + transit latency, and the browser
+// scales the H.264 back up in <video> (decision №40).
+//
+// The trunc(…/2)*2 width and -2 height are not decoration — they are what makes
+// an arbitrary client-chosen factor (decision №88) safe. The scale filter does
+// NOT round to even by itself: with a naive scale=iw*S:ih*S, an odd result is
+// silently fixed up by h264_videotoolbox but makes libx264 refuse to open
+// ("width not divisible by 2"), which would kill the Linux demo backend on any
+// factor the old hardcoded 0.5 never produced. Verified against both encoders.
+//
+// At 1.0 the filter is omitted entirely rather than made an identity — a source
+// already at target resolution should not pay for a scaler pass.
+func ffmpegArgs(fps int, scale float64, bitrate int) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "warning",
 		"-fflags", "nobuffer", "-flags", "low_delay", "-analyzeduration", "0",
 		"-f", "image2pipe", "-vcodec", "png", "-framerate", strconv.Itoa(fps), "-i", "pipe:0",
 		"-an",
 	}
-	if halve {
-		args = append(args, "-vf", "scale=iw/2:ih/2")
+	if scale != 1 {
+		args = append(args, "-vf", fmt.Sprintf("scale=trunc(iw*%g/2)*2:-2", scale))
 	}
 	args = append(args, "-c:v", encoderName())
 	// Low-latency knobs are encoder-specific; the shared flags above/below carry
@@ -65,7 +77,7 @@ func ffmpegArgs(fps int, halve bool) []string {
 	}
 	return append(args,
 		"-profile:v", "baseline",
-		"-g", strconv.Itoa(fps*2), "-b:v", "8M", "-pix_fmt", "yuv420p",
+		"-g", strconv.Itoa(fps*2), "-b:v", strconv.Itoa(bitrate), "-pix_fmt", "yuv420p",
 		"-flush_packets", "1", "-max_delay", "0", "-f", "h264", "pipe:1",
 	)
 }
@@ -73,21 +85,12 @@ func ffmpegArgs(fps int, halve bool) []string {
 // Encode spawns ffmpeg, feeds PNG frames from png to its stdin, and emits one
 // Frame per H.264 access unit on the returned channel until ctx is cancelled
 // (then the channel closes and ffmpeg is killed via the command context).
-// Dimensions are halved per decision №40 (retina screenshots downscale to
-// logical size).
-func Encode(ctx context.Context, png <-chan []byte, fps int) (<-chan Frame, error) {
-	return encode(ctx, png, fps, true)
-}
-
-// EncodeFullRes is Encode without the halving scale filter, for sources that
-// already produce frames at the target resolution (the browser demo backend
-// captures at deviceScaleFactor 1). Dimensions must be even (yuv420p).
-func EncodeFullRes(ctx context.Context, png <-chan []byte, fps int) (<-chan Frame, error) {
-	return encode(ctx, png, fps, false)
-}
-
-func encode(ctx context.Context, png <-chan []byte, fps int, halve bool) (<-chan Frame, error) {
-	cmd := exec.CommandContext(ctx, "ffmpeg", ffmpegArgs(fps, halve)...)
+//
+// scale (0 < scale <= 1) downsizes each dimension; bitrate is the target in
+// bits/s. Callers pass values the client asked for, already clamped — the
+// encoder trusts them and only enforces the pixel-parity yuv420p needs.
+func Encode(ctx context.Context, png <-chan []byte, fps int, scale float64, bitrate int) (<-chan Frame, error) {
+	cmd := exec.CommandContext(ctx, "ffmpeg", ffmpegArgs(fps, scale, bitrate)...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("ffmpeg stdin: %w", err)

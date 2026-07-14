@@ -3,6 +3,8 @@ package browser
 import (
 	"context"
 	"testing"
+
+	"github.com/kei-sidorov/simcast/internal/server"
 )
 
 func TestListExposesOneBootedDemoDevice(t *testing.T) {
@@ -22,7 +24,7 @@ func TestListExposesOneBootedDemoDevice(t *testing.T) {
 
 func TestAttachRejectsUnknownUDID(t *testing.T) {
 	b := New(Options{URL: "https://example.com"})
-	if _, err := b.Attach(context.Background(), "not-demo"); err == nil {
+	if _, err := b.Attach(context.Background(), "not-demo", server.QualityOpts{}); err == nil {
 		t.Fatalf("Attach of unknown udid must fail before launching a browser")
 	}
 }

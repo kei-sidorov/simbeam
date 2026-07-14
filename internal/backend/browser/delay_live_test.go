@@ -37,7 +37,7 @@ func TestLiveInputTapAfterDelay(t *testing.T) {
 	defer cancel()
 
 	b := New(Options{URL: page})
-	fd, err := b.Attach(ctx, UDID)
+	fd, err := b.Attach(ctx, UDID, server.QualityOpts{})
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}

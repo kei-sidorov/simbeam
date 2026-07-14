@@ -26,6 +26,13 @@ import (
 // fps is the screenshot/encode frame rate, matching the sim backend.
 const fps = 15
 
+// defaultScale is the encoder's resolution multiplier when the client asks for
+// none: 1.0, i.e. no downscale. Unlike the sim backend there is no retina to
+// halve — Options.Scale (the CDP deviceScaleFactor) is pinned to 1, so the
+// capture already arrives at target resolution. Note the two are unrelated
+// knobs: Options.Scale sizes the source, this sizes the encode of it.
+const defaultScale = 1.0
+
 // UDID is the fixed identifier of the single demo device this backend exposes.
 const UDID = "demo"
 
@@ -85,13 +92,18 @@ func (b *Backend) Boot(context.Context, string) error     { return nil }
 func (b *Backend) Shutdown(context.Context, string) error { return nil }
 func (b *Backend) Shake(context.Context, string) error    { return nil }
 
+// DefaultScale reports the encode multiplier used when the client asks for none.
+func (b *Backend) DefaultScale() float64 { return defaultScale }
+
 // Attach launches a headless Chromium with mobile emulation, navigates to the
-// demo URL, and starts the screenshot→H.264 pipeline. The feed stops when ctx
-// is cancelled; the caller must also Close() it to kill the browser.
-func (b *Backend) Attach(ctx context.Context, udid string) (server.Feed, error) {
+// demo URL, and starts the screenshot→H.264 pipeline at the requested quality.
+// The feed stops when ctx is cancelled; the caller must also Close() it to kill
+// the browser.
+func (b *Backend) Attach(ctx context.Context, udid string, q server.QualityOpts) (server.Feed, error) {
 	if udid != UDID {
 		return nil, fmt.Errorf("attach: unknown device %q (demo backend serves only %q)", udid, UDID)
 	}
+	q = q.Resolve(defaultScale)
 	if err := encoder.Available(); err != nil {
 		return nil, err
 	}
@@ -157,7 +169,7 @@ func (b *Backend) Attach(ctx context.Context, udid string) (server.Feed, error) 
 		}
 	}()
 
-	frames, err := encoder.EncodeFullRes(ctx, png, fps)
+	frames, err := encoder.Encode(ctx, png, fps, q.Scale, q.Bitrate)
 	if err != nil {
 		cancelAll()
 		return nil, err

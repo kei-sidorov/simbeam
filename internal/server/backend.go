@@ -17,15 +17,63 @@ type Companion interface {
 	Shake(ctx context.Context, udid string) error
 }
 
+// Quality bounds for QualityOpts. Scale floors at 0.25 because simulator text
+// stops being readable below it; Bitrate floors low enough to keep a picture
+// alive on a bad link and ceils at twice today's default, headroom for scale 1.0
+// on a retina device.
+const (
+	MinScale       = 0.25
+	MaxScale       = 1.0
+	MinBitrate     = 500_000
+	MaxBitrate     = 16_000_000
+	DefaultBitrate = 8_000_000
+)
+
+// QualityOpts is the video quality the client asked for. Presets deliberately do
+// not exist here — the wire carries numbers and the iPad client owns the presets
+// (decision №88). fps is absent on purpose: idb's Screenshot RPC costs more per
+// frame than the 15fps poll interval, so capture is already the ceiling and a
+// knob would promise what the pipeline cannot do.
+//
+// A zero field means "unset", which is what an old client's attach unmarshals to
+// — hence the defaults below reproduce today's hardcoded behaviour exactly.
+type QualityOpts struct {
+	Scale   float64 `json:"scale,omitempty"`   // resolution multiplier of the source; 0 → backend default
+	Bitrate int     `json:"bitrate,omitempty"` // target bits/s; 0 → DefaultBitrate
+}
+
+// Resolve fills unset fields and clamps the rest into range. defScale differs per
+// backend (the sim halves its retina capture, the browser already captures at
+// target), so only the caller knows it. Out-of-range clamps rather than errors: a
+// client asking for more than the daemon allows should get the daemon's best, not
+// a failed attach.
+func (o QualityOpts) Resolve(defScale float64) QualityOpts {
+	if o.Scale <= 0 {
+		o.Scale = defScale
+	}
+	o.Scale = min(max(o.Scale, MinScale), MaxScale)
+	if o.Bitrate <= 0 {
+		o.Bitrate = DefaultBitrate
+	}
+	o.Bitrate = min(max(o.Bitrate, MinBitrate), MaxBitrate)
+	return o
+}
+
 // Backend abstracts what is being streamed: real iOS simulators via
 // idb_companion sidecars on macOS (backend/sim), or a headless browser for the
 // hosted demo (backend/browser). The session layer (rtcDispatch) only ever
 // talks to this interface; main wires the concrete backend.
 type Backend interface {
 	Companion
-	// Attach starts a live feed for udid. The feed stops producing frames when
-	// ctx is cancelled; the caller must also Close() it to release resources.
-	Attach(ctx context.Context, udid string) (Feed, error)
+	// DefaultScale is the resolution multiplier applied when the client requests
+	// none. It is backend-specific (the sim halves its retina capture, the
+	// browser is already at target), and the session layer needs it to tell the
+	// client which quality actually took effect.
+	DefaultScale() float64
+	// Attach starts a live feed for udid at the requested quality (unset fields
+	// take the backend's defaults). The feed stops producing frames when ctx is
+	// cancelled; the caller must also Close() it to release resources.
+	Attach(ctx context.Context, udid string, q QualityOpts) (Feed, error)
 }
 
 // Feed is one live video attachment: pre-encoded H.264 access units plus input

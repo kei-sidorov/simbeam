@@ -28,11 +28,27 @@ const bulkChunkCeiling = 200 * 1024
 // SDP omits "a=max-message-size".
 const bulkChunkFallback = 16 * 1024
 
-// bulkMsg is an inbound request on the reliable ordered "bulk" DataChannel. The
-// only request today is {"type":"screenshot"} — a full-resolution capture of
-// the currently attached simulator, with no parameters.
+// bulkMsg is an inbound request on the reliable ordered "bulk" DataChannel:
+// {"type":"screenshot"} — a full-resolution capture of the currently attached
+// simulator, no parameters — or {"type":"quality","scale":…,"bitrate":…}, which
+// re-encodes the live feed at a new quality.
+//
+// Quality rides "bulk" rather than "control" because control is unreliable
+// (maxRetransmits: 0) and would silently drop the request on exactly the bad
+// network that motivates lowering quality (decision №88).
 type bulkMsg struct {
-	Type string `json:"type"` // screenshot
+	Type    string  `json:"type"`    // screenshot|quality
+	Scale   float64 `json:"scale"`   // quality: resolution multiplier; 0 → backend default
+	Bitrate int     `json:"bitrate"` // quality: target bits/s; 0 → default
+}
+
+// bulkQuality echoes the quality that actually took effect, after unset fields
+// were defaulted and out-of-range ones clamped — otherwise a client whose
+// request was clamped would render a preset the daemon never applied.
+type bulkQuality struct {
+	Type    string  `json:"type"` // always "quality"
+	Scale   float64 `json:"scale"`
+	Bitrate int     `json:"bitrate"`
 }
 
 // bulkHeader announces an image transfer: the binary chunks that follow
@@ -64,8 +80,41 @@ func (d *rtcDispatch) handleBulk(data []byte) {
 	switch m.Type {
 	case "screenshot":
 		d.doScreenshot()
+	case "quality":
+		d.doQuality(QualityOpts{Scale: m.Scale, Bitrate: m.Bitrate})
 	default:
 		d.bulkError(fmt.Sprintf("unknown bulk type %q", m.Type))
+	}
+}
+
+// doQuality re-encodes the live feed at quality q and replies with what actually
+// took effect. Nothing attached → error: the starting quality is attach's job,
+// and there is no feed here to remember a setting for.
+//
+// The re-attach runs on its own goroutine: it tears down and respawns the feed
+// (backend.Attach blocks on feed readiness), and handleBulk's goroutine must
+// stay free — doScreenshot can occupy it for up to screenshotTimeout. The reply
+// therefore reports the requested-and-clamped quality rather than a completed
+// attach; failures surface on control as doAttach's "error", the same as any
+// other attach.
+func (d *rtcDispatch) doQuality(q QualityOpts) {
+	d.mu.Lock()
+	att := d.att
+	d.mu.Unlock()
+	if att == nil {
+		d.bulkError("no simulator attached")
+		return
+	}
+	udid := att.udid
+	q = q.Resolve(d.backend.DefaultScale())
+	go d.doAttach(udid, q)
+
+	b, err := json.Marshal(bulkQuality{Type: "quality", Scale: q.Scale, Bitrate: q.Bitrate})
+	if err != nil || d.sendBulkText == nil {
+		return
+	}
+	if err := d.sendBulkText(string(b)); err != nil {
+		log.Printf("quality: sending reply failed: %v", err)
 	}
 }
 

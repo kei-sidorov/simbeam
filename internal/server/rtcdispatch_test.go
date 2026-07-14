@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kei-sidorov/simcast/internal/companion"
@@ -41,11 +42,26 @@ type stubComp struct {
 	shakeErr    error
 	feed        *stubFeed
 	attachErr   error
-	attached    []string
+
+	mu         sync.Mutex
+	attached   []string
+	attachedAt []QualityOpts // quality of each Attach, parallel to attached
 }
 
-func (c *stubComp) Attach(_ context.Context, udid string) (Feed, error) {
+// stubDefaultScale is what the fake backend reports as its default multiplier —
+// deliberately neither MinScale nor MaxScale, so tests can tell "defaulted" from
+// "clamped".
+const stubDefaultScale = 0.5
+
+func (c *stubComp) DefaultScale() float64 { return stubDefaultScale }
+
+// Attach records the quality it was handed. It takes a lock because doQuality
+// re-attaches on its own goroutine, so tests race the dispatch otherwise.
+func (c *stubComp) Attach(_ context.Context, udid string, q QualityOpts) (Feed, error) {
+	c.mu.Lock()
 	c.attached = append(c.attached, udid)
+	c.attachedAt = append(c.attachedAt, q)
+	c.mu.Unlock()
 	if c.attachErr != nil {
 		return nil, c.attachErr
 	}
@@ -53,6 +69,20 @@ func (c *stubComp) Attach(_ context.Context, udid string) (Feed, error) {
 		c.feed = &stubFeed{}
 	}
 	return c.feed, nil
+}
+
+// attaches returns a snapshot of the udids attached so far.
+func (c *stubComp) attaches() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.attached...)
+}
+
+// qualities returns a snapshot of the quality each attach was handed.
+func (c *stubComp) qualities() []QualityOpts {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]QualityOpts(nil), c.attachedAt...)
 }
 
 func (c *stubComp) List(context.Context) ([]companion.Simulator, error) {
@@ -240,8 +270,8 @@ func TestDoAttachRepliesWithFeedScreen(t *testing.T) {
 
 	d.handle([]byte(`{"type":"attach","udid":"ABC"}`))
 
-	if len(c.attached) != 1 || c.attached[0] != "ABC" {
-		t.Fatalf("Attach(ABC) not called, got %v", c.attached)
+	if got := c.attaches(); len(got) != 1 || got[0] != "ABC" {
+		t.Fatalf("Attach(ABC) not called, got %v", got)
 	}
 	if len(out) != 1 || out[0].Type != "attached" || out[0].W != 100 || out[0].H != 200 {
 		t.Fatalf("want attached reply 100x200, got %+v", out)

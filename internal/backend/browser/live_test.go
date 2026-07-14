@@ -41,7 +41,7 @@ func TestLiveAttachStreamsFrames(t *testing.T) {
 	defer cancel()
 
 	b := New(Options{URL: "data:text/html,<body style='background:%23346'><h1>simcast demo</h1></body>"})
-	feed, err := b.Attach(ctx, UDID)
+	feed, err := b.Attach(ctx, UDID, server.QualityOpts{})
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}

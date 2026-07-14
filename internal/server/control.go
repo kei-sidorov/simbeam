@@ -18,6 +18,16 @@ type controlMsg struct {
 	Y2       float64 `json:"y2"`
 	Duration float64 `json:"duration"`
 	Key      string  `json:"key"`
+	// attach: the starting video quality. Both are optional — an old client omits
+	// them and gets the backend's defaults, which are today's hardcoded values.
+	// Changing quality mid-session goes over "bulk" instead (decision №88).
+	Scale   float64 `json:"scale"`
+	Bitrate int     `json:"bitrate"`
+}
+
+// quality extracts the video quality fields (attach only; zero means unset).
+func (m controlMsg) quality() QualityOpts {
+	return QualityOpts{Scale: m.Scale, Bitrate: m.Bitrate}
 }
 
 // input converts the wire message into the backend-facing Input (the gesture

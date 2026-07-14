@@ -10,10 +10,15 @@ type attachment struct {
 	udid   string // device being streamed; lets doShutdown stop only its own feed
 }
 
-// doAttach tears down any current feed, asks the backend for a new one, and
-// starts pumping its H.264 frames into the video track. Replies "attached" with
-// screen dimensions, or "error".
-func (d *rtcDispatch) doAttach(udid string) {
+// doAttach tears down any current feed, asks the backend for a new one at
+// quality q, and starts pumping its H.264 frames into the video track. Replies
+// "attached" with screen dimensions, or "error".
+//
+// This is also the path a mid-session quality change takes (doQuality): the feed
+// is torn down and respawned with new encoder arguments, since ffmpeg's argv is
+// fixed at spawn. The track is not renegotiated — the fresh IDR ffmpeg emits on
+// start resyncs the decoder, resolution change included (decision №50).
+func (d *rtcDispatch) doAttach(udid string, q QualityOpts) {
 	if udid == "" {
 		d.reply(ctrlReply{Type: "error", Msg: "attach: missing udid"})
 		return
@@ -21,7 +26,7 @@ func (d *rtcDispatch) doAttach(udid string) {
 	d.stopAttachment()
 
 	ctx, cancel := context.WithCancel(d.baseCtx)
-	feed, err := d.backend.Attach(ctx, udid)
+	feed, err := d.backend.Attach(ctx, udid, q)
 	if err != nil {
 		cancel()
 		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
