@@ -35,12 +35,15 @@ type ctrlReply struct {
 // (backend.Attach waits for feed readiness). Acceptable for the debug/local
 // scope — revisit if it stalls input during attach.
 type rtcDispatch struct {
-	backend    Backend
-	baseCtx    context.Context
-	send       func([]byte)
-	writeFrame func([]byte, time.Duration) error
-	hostName   string // Mac display name, sent in the hello
-	osVersion  string // macOS version, sent in the hello
+	backend      Backend
+	baseCtx      context.Context
+	send         func([]byte)       // control reply (text)
+	sendBulk     func([]byte) error // bulk reply, image chunk (binary)
+	sendBulkText func(string) error // bulk reply, transfer header or error envelope (text)
+	bulkMaxMsg   func() int         // peer's negotiated max message size, the hard cap on one sendBulk
+	writeFrame   func([]byte, time.Duration) error
+	hostName     string // Mac display name, sent in the hello
+	osVersion    string // macOS version, sent in the hello
 
 	mu  sync.Mutex
 	att *attachment

@@ -41,6 +41,12 @@ type Feed interface {
 	// log-and-drop failures rather than surface them (an error reply would
 	// wrongly drop the client's UI to "disconnected").
 	Input(ctx context.Context, in Input)
+	// Screenshot captures one frame of the attached device at its native, full
+	// resolution and returns the encoded image bytes (PNG). This is the source
+	// for the client's "full-resolution screenshot" button — deliberately not
+	// pulled from the video track, which is downscaled (decision №40). Unlike
+	// Input this is request/reply, so it surfaces errors to the caller.
+	Screenshot(ctx context.Context) ([]byte, error)
 	// Close releases everything the feed holds (processes, connections).
 	Close() error
 }

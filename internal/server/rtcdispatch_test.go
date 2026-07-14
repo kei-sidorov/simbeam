@@ -1,25 +1,34 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/kei-sidorov/simcast/internal/companion"
 	"github.com/kei-sidorov/simcast/internal/encoder"
 )
 
-// stubFeed is an inert Feed that records the input routed to it.
+// stubFeed is an inert Feed that records the input routed to it and serves a
+// canned screenshot (or error).
 type stubFeed struct {
-	w, h   uint64
-	inputs []Input
+	w, h    uint64
+	inputs  []Input
+	shot    []byte
+	shotErr error
 }
 
 func (f *stubFeed) Screen() (uint64, uint64)         { return f.w, f.h }
 func (f *stubFeed) Frames() <-chan encoder.Frame     { return nil }
 func (f *stubFeed) Input(_ context.Context, i Input) { f.inputs = append(f.inputs, i) }
-func (f *stubFeed) Close() error                     { return nil }
+func (f *stubFeed) Screenshot(context.Context) ([]byte, error) {
+	return f.shot, f.shotErr
+}
+func (f *stubFeed) Close() error { return nil }
 
 type stubComp struct {
 	sims        []companion.Simulator
@@ -323,5 +332,261 @@ func TestDoShakeErrorIsSwallowed(t *testing.T) {
 
 	if len(out) != 0 {
 		t.Fatalf("shake failure must not reply (would disconnect the client), got %+v", out)
+	}
+}
+
+// bulkSink captures the bulk reply paths: chunks (binary image frames, in order)
+// and txt (raw text frames — header or error envelope). sendErr, when set, fails
+// every binary send to model pion rejecting an oversized frame. maxMsg models
+// the peer's negotiated max-message-size: a send above it is rejected exactly as
+// pion/sctp does, so a chunker that ignores the cap fails these tests.
+type bulkSink struct {
+	chunks  [][]byte
+	txt     []string
+	sendErr error
+	maxMsg  int
+}
+
+// image is the reassembled payload the client would decode: the binary chunks
+// concatenated in arrival order.
+func (s *bulkSink) image() []byte {
+	var out []byte
+	for _, c := range s.chunks {
+		out = append(out, c...)
+	}
+	return out
+}
+
+// errors returns just the error envelopes among the text frames, so tests can
+// assert on failures without matching the header.
+func (s *bulkSink) errors() []bulkErr {
+	var out []bulkErr
+	for _, raw := range s.txt {
+		var e bulkErr
+		if err := json.Unmarshal([]byte(raw), &e); err != nil || e.Type != "error" {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// newBulkDispatch wires a dispatch onto sink. The peer's negotiated cap defaults
+// to what libwebrtc advertises (256 KiB) unless the sink overrides it.
+func newBulkDispatch(backend Backend, sink *bulkSink) *rtcDispatch {
+	if sink.maxMsg == 0 {
+		sink.maxMsg = 256 * 1024
+	}
+	return &rtcDispatch{
+		backend: backend,
+		baseCtx: context.Background(),
+		sendBulk: func(b []byte) error {
+			if sink.sendErr != nil {
+				return sink.sendErr
+			}
+			// Mirror pion/sctp: len(payload) > maxMessageSize is a hard reject.
+			if len(b) > sink.maxMsg {
+				return fmt.Errorf("outbound packet larger than maximum message size: %d", sink.maxMsg)
+			}
+			sink.chunks = append(sink.chunks, append([]byte(nil), b...))
+			return nil
+		},
+		sendBulkText: func(s string) error {
+			sink.txt = append(sink.txt, s)
+			return nil
+		},
+		bulkMaxMsg: func() int { return sink.maxMsg },
+	}
+}
+
+// An image smaller than the chunk size still follows the framing: a header
+// announcing the byte count, then the payload.
+func TestScreenshotRepliesWithHeaderThenChunks(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{}, &sink)
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: []byte("PNGDATA")}, udid: "ABC"}
+
+	d.handleBulk([]byte(`{"type":"screenshot"}`))
+
+	if string(sink.image()) != "PNGDATA" {
+		t.Fatalf("want reassembled PNGDATA, got %q", sink.image())
+	}
+	if len(sink.txt) != 1 {
+		t.Fatalf("want exactly one text frame (the header), got %+v", sink.txt)
+	}
+	var h bulkHeader
+	if err := json.Unmarshal([]byte(sink.txt[0]), &h); err != nil {
+		t.Fatalf("header does not decode: %v", err)
+	}
+	if h.Type != "screenshot" || h.Bytes != len("PNGDATA") {
+		t.Fatalf("want header screenshot/%d, got %+v", len("PNGDATA"), h)
+	}
+	if len(sink.errors()) != 0 {
+		t.Fatalf("success must not emit an error envelope, got %+v", sink.errors())
+	}
+}
+
+// The whole point of the framing: an image far larger than the peer's
+// max-message-size goes out as several chunks, each within the cap, and
+// reassembles to the original bytes.
+func TestScreenshotSplitsLargeImageIntoCappedChunks(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{}, &sink)
+	img := make([]byte, bulkChunkCeiling*2+7) // two full chunks and a short tail
+	for i := range img {
+		img[i] = byte(i)
+	}
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: img}, udid: "ABC"}
+
+	d.handleBulk([]byte(`{"type":"screenshot"}`))
+
+	if len(sink.chunks) != 3 {
+		t.Fatalf("want 3 chunks for %d bytes, got %d", len(img), len(sink.chunks))
+	}
+	for i, c := range sink.chunks {
+		if len(c) > bulkChunkCeiling {
+			t.Fatalf("chunk %d is %d bytes — over the %d cap", i, len(c), bulkChunkCeiling)
+		}
+	}
+	if !bytes.Equal(sink.image(), img) {
+		t.Fatalf("reassembled image differs from the capture")
+	}
+	var h bulkHeader
+	if err := json.Unmarshal([]byte(sink.txt[0]), &h); err != nil || h.Bytes != len(img) {
+		t.Fatalf("header must announce %d bytes, got %+v (err %v)", len(img), h, err)
+	}
+}
+
+// A peer that advertises less than our ceiling — or omits a=max-message-size
+// entirely, leaving pion on its 65535 fallback — must still get its screenshot.
+// A chunker hardcoded to the ceiling has every send rejected here.
+func TestScreenshotChunksToNegotiatedCap(t *testing.T) {
+	for _, cap := range []int{65535, 16 * 1024} {
+		sink := bulkSink{maxMsg: cap}
+		d := newBulkDispatch(&stubComp{}, &sink)
+		img := make([]byte, 300*1024) // larger than the ceiling and the cap
+		for i := range img {
+			img[i] = byte(i)
+		}
+		d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: img}, udid: "ABC"}
+
+		d.handleBulk([]byte(`{"type":"screenshot"}`))
+
+		if errs := sink.errors(); len(errs) != 0 {
+			t.Fatalf("cap %d: transfer must succeed, got %+v", cap, errs)
+		}
+		for i, c := range sink.chunks {
+			if len(c) > cap {
+				t.Fatalf("cap %d: chunk %d is %d bytes — the peer rejects it", cap, i, len(c))
+			}
+		}
+		if !bytes.Equal(sink.image(), img) {
+			t.Fatalf("cap %d: reassembled image differs from the capture", cap)
+		}
+	}
+}
+
+// With no association yet the cap is unknown (0). Chunk to the conservative
+// fallback rather than to the ceiling, which the peer may well reject.
+func TestScreenshotUnknownCapUsesFallback(t *testing.T) {
+	sink := bulkSink{maxMsg: 1 << 30} // sink accepts anything; assert on the size we choose
+	d := newBulkDispatch(&stubComp{}, &sink)
+	d.bulkMaxMsg = func() int { return 0 } // association not up
+	img := make([]byte, bulkChunkFallback+1)
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: img}, udid: "ABC"}
+
+	d.handleBulk([]byte(`{"type":"screenshot"}`))
+
+	if len(sink.chunks) != 2 {
+		t.Fatalf("want the %d-byte fallback split (2 chunks), got %d", bulkChunkFallback, len(sink.chunks))
+	}
+	if len(sink.chunks[0]) != bulkChunkFallback {
+		t.Fatalf("want a %d-byte first chunk, got %d", bulkChunkFallback, len(sink.chunks[0]))
+	}
+}
+
+// A chunk send that pion rejects must stop the stream and tell the client why —
+// otherwise it waits out its failsafe staring at a half-delivered image.
+func TestScreenshotSendFailureRepliesError(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{}, &sink)
+	sink.sendErr = errors.New("outbound packet larger than maximum message size: 262144")
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: []byte("PNGDATA")}, udid: "ABC"}
+
+	d.handleBulk([]byte(`{"type":"screenshot"}`))
+
+	errs := sink.errors()
+	if len(errs) != 1 || errs[0].Type != "error" {
+		t.Fatalf("want one error envelope, got %+v", errs)
+	}
+	if !strings.Contains(errs[0].Msg, "maximum message size") {
+		t.Fatalf("error must carry the reason, got %q", errs[0].Msg)
+	}
+}
+
+// An empty capture is a daemon bug, not an image: say so rather than shipping a
+// header promising zero bytes that the client cannot decode.
+func TestScreenshotEmptyCaptureRepliesError(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{}, &sink)
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: []byte{}}, udid: "ABC"}
+
+	d.handleBulk([]byte(`{"type":"screenshot"}`))
+
+	if len(sink.chunks) != 0 {
+		t.Fatalf("empty capture must not send chunks, got %d", len(sink.chunks))
+	}
+	if len(sink.errors()) != 1 {
+		t.Fatalf("want one error envelope, got %+v", sink.errors())
+	}
+}
+
+// With nothing attached the daemon must still answer — a text error, never
+// silence (the client would otherwise hit its ~20s failsafe).
+func TestScreenshotNoAttachmentRepliesError(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{}, &sink)
+
+	d.handleBulk([]byte(`{"type":"screenshot"}`))
+
+	if len(sink.chunks) != 0 {
+		t.Fatalf("no attachment must not send an image, got %d chunks", len(sink.chunks))
+	}
+	errs := sink.errors()
+	if len(errs) != 1 || errs[0].Msg == "" {
+		t.Fatalf("want one non-empty error envelope, got %+v", errs)
+	}
+}
+
+// A capture failure surfaces as a text error (unlike fire-and-forget input).
+func TestScreenshotFeedErrorRepliesError(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{}, &sink)
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{shotErr: errors.New("grpc down")}, udid: "ABC"}
+
+	d.handleBulk([]byte(`{"type":"screenshot"}`))
+
+	if len(sink.chunks) != 0 {
+		t.Fatalf("capture error must not send an image, got %d chunks", len(sink.chunks))
+	}
+	if len(sink.errors()) != 1 {
+		t.Fatalf("want one error envelope, got %+v", sink.errors())
+	}
+}
+
+func TestBulkUnknownTypeAndBadJSONReplyError(t *testing.T) {
+	for _, in := range []string{`{"type":"nope"}`, `not json`} {
+		var sink bulkSink
+		d := newBulkDispatch(&stubComp{}, &sink)
+		d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: []byte("x")}, udid: "ABC"}
+
+		d.handleBulk([]byte(in))
+
+		if len(sink.chunks) != 0 {
+			t.Fatalf("%s: must not send an image, got %d chunks", in, len(sink.chunks))
+		}
+		if len(sink.errors()) != 1 {
+			t.Fatalf("%s: want one error envelope, got %+v", in, sink.errors())
+		}
 	}
 }

@@ -71,6 +71,12 @@ func (f *feed) Screen() (w, h uint64)        { return f.screen.Width, f.screen.H
 func (f *feed) Frames() <-chan encoder.Frame { return f.frames }
 func (f *feed) Close() error                 { return f.sidecar.Close() }
 
+// Screenshot returns a single full-resolution PNG straight from the sidecar's
+// gRPC Screenshot — the retina frame the video track downscales away.
+func (f *feed) Screenshot(ctx context.Context) ([]byte, error) {
+	return f.client.Screenshot(ctx)
+}
+
 // Input dispatches one gesture to the idb client, scaling normalized
 // coordinates into the simulator's logical-point space (which is what hid
 // expects). Failures are logged and dropped — input is fire-and-forget.

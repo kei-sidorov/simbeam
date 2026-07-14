@@ -179,6 +179,31 @@ func (f *feed) Screen() (w, h uint64) {
 func (f *feed) Frames() <-chan encoder.Frame { return f.frames }
 func (f *feed) Close() error                 { f.cancel(); return nil }
 
+// Screenshot captures one full-resolution PNG of the demo tab (device
+// resolution, CSS × Scale — the same source the poll loop streams). chromedp
+// serializes this against the concurrent poll on the shared tab context.
+//
+// The capture must run on the tab context (that is where chromedp keeps the
+// target), but it also has to honour the caller's deadline — a wedged CDP call
+// would otherwise hang past the screenshot timeout and leave the client with no
+// reply at all. So: run on a cancellable child of the tab, and cancel it when
+// the caller's ctx ends. Cancelling this child does not close the tab; only
+// f.cancel does.
+func (f *feed) Screenshot(ctx context.Context) ([]byte, error) {
+	runCtx, cancel := context.WithCancel(f.tabCtx)
+	defer cancel()
+	defer context.AfterFunc(ctx, cancel)()
+
+	var buf []byte
+	if err := chromedp.Run(runCtx, chromedp.CaptureScreenshot(&buf)); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("demo screenshot: %w", ctxErr)
+		}
+		return nil, fmt.Errorf("demo screenshot: %w", err)
+	}
+	return buf, nil
+}
+
 // namedKeys maps the KeyboardEvent.key names the client sends to chromedp's kb
 // runes; every other key arrives as its literal character.
 var namedKeys = map[string]string{

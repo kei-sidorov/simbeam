@@ -35,7 +35,7 @@ func makeOffer(t *testing.T) string {
 }
 
 func TestSessionAnswer(t *testing.T) {
-	sess, err := New(nil, nil)
+	sess, err := New(nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestSessionAnswer(t *testing.T) {
 }
 
 func TestSessionWriteFrameNoPanic(t *testing.T) {
-	sess, err := New(nil, nil)
+	sess, err := New(nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestSessionWriteFrameNoPanic(t *testing.T) {
 }
 
 func TestSessionSendBeforeChannel(t *testing.T) {
-	sess, err := New(nil, nil)
+	sess, err := New(nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +70,24 @@ func TestSessionSendBeforeChannel(t *testing.T) {
 	}
 }
 
+func TestSessionSendBulkBeforeChannel(t *testing.T) {
+	sess, err := New(nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	// No bulk DataChannel has been opened by a remote peer yet — both the binary
+	// and text reply paths must report it rather than panic.
+	if err := sess.SendBulk([]byte{0x89, 0x50}); !errors.Is(err, ErrNoBulkChannel) {
+		t.Fatalf("SendBulk: want ErrNoBulkChannel, got %v", err)
+	}
+	if err := sess.SendBulkText(`{"type":"error"}`); !errors.Is(err, ErrNoBulkChannel) {
+		t.Fatalf("SendBulkText: want ErrNoBulkChannel, got %v", err)
+	}
+}
+
 func TestNewWithICEServersBuilds(t *testing.T) {
-	sess, err := New(nil, []webrtc.ICEServer{
+	sess, err := New(nil, nil, []webrtc.ICEServer{
 		{URLs: []string{"stun:stun.example:3478"}},
 	})
 	if err != nil {

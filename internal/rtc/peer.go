@@ -17,22 +17,30 @@ import (
 // the "control" DataChannel.
 var ErrNoControlChannel = errors.New("rtc: control channel not open")
 
-// Session is one WebRTC peer connection: H.264 video out, control DataChannel in.
+// ErrNoBulkChannel is returned by SendBulk/SendBulkText before the remote peer
+// has opened the "bulk" DataChannel.
+var ErrNoBulkChannel = errors.New("rtc: bulk channel not open")
+
+// Session is one WebRTC peer connection: H.264 video out, plus two inbound
+// DataChannels — "control" (lossy, tap/swipe/management) and "bulk" (reliable
+// ordered, full-resolution screenshots).
 type Session struct {
 	pc         *webrtc.PeerConnection
 	track      *webrtc.TrackLocalStaticSample
-	mu         sync.Mutex // guards onClose, onCtrlOpen and ctrl
+	mu         sync.Mutex // guards onClose, onCtrlOpen, ctrl and bulk
 	onClose    func()
 	onCtrlOpen func()
 	ctrl       *webrtc.DataChannel
+	bulk       *webrtc.DataChannel
 	closeOnce  sync.Once
 }
 
-// New creates a peer with one H.264 video track and routes inbound "control"
-// DataChannel messages to onControl (nil to ignore). iceServers configures ICE
-// gathering: nil/empty yields host candidates only (localhost dev); STUN/TURN
-// entries enable srflx/relay for remote rendezvous.
-func New(onControl func([]byte), iceServers []webrtc.ICEServer) (*Session, error) {
+// New creates a peer with one H.264 video track and routes inbound DataChannel
+// messages by label: "control" → onControl, "bulk" → onBulk (either nil to
+// ignore). iceServers configures ICE gathering: nil/empty yields host
+// candidates only (localhost dev); STUN/TURN entries enable srflx/relay for
+// remote rendezvous.
+func New(onControl, onBulk func([]byte), iceServers []webrtc.ICEServer) (*Session, error) {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: iceServers})
 	if err != nil {
 		return nil, err
@@ -49,25 +57,34 @@ func New(onControl func([]byte), iceServers []webrtc.ICEServer) (*Session, error
 	}
 	s := &Session{pc: pc, track: track}
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		if dc.Label() != "control" {
-			return
-		}
-		s.mu.Lock()
-		s.ctrl = dc
-		s.mu.Unlock()
-		dc.OnOpen(func() {
+		switch dc.Label() {
+		case "control":
 			s.mu.Lock()
-			fn := s.onCtrlOpen
+			s.ctrl = dc
 			s.mu.Unlock()
-			if fn != nil {
-				fn()
-			}
-		})
-		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			if onControl != nil {
-				onControl(msg.Data)
-			}
-		})
+			dc.OnOpen(func() {
+				s.mu.Lock()
+				fn := s.onCtrlOpen
+				s.mu.Unlock()
+				if fn != nil {
+					fn()
+				}
+			})
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				if onControl != nil {
+					onControl(msg.Data)
+				}
+			})
+		case "bulk":
+			s.mu.Lock()
+			s.bulk = dc
+			s.mu.Unlock()
+			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+				if onBulk != nil {
+					onBulk(msg.Data)
+				}
+			})
+		}
 	})
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
 		switch st {
@@ -118,6 +135,48 @@ func (s *Session) Send(b []byte) error {
 	// JSON.parse(ev.data), which requires a text frame; a binary frame would
 	// arrive as a Blob/ArrayBuffer and fail to parse.
 	return dc.SendText(string(b))
+}
+
+// SendBulk delivers a binary reply — the full-resolution screenshot image
+// bytes — over the reliable ordered "bulk" DataChannel as a single message.
+// The client decodes a binary frame directly into an image. Returns
+// ErrNoBulkChannel if the peer has not opened the channel yet.
+func (s *Session) SendBulk(b []byte) error {
+	s.mu.Lock()
+	dc := s.bulk
+	s.mu.Unlock()
+	if dc == nil {
+		return ErrNoBulkChannel
+	}
+	return dc.Send(b)
+}
+
+// MaxMessageSize reports the largest single message the remote peer has agreed
+// to accept, negotiated over SCTP from its SDP "a=max-message-size". This is a
+// hard cap, not a hint: pion rejects any Send whose payload exceeds it outright
+// (pion/sctp compares len(payload) directly, so there is no framing overhead to
+// subtract). A full-resolution screenshot is megabytes, so bulk senders must
+// chunk under this number. Returns 0 before the SCTP association is up.
+func (s *Session) MaxMessageSize() int {
+	sctp := s.pc.SCTP()
+	if sctp == nil {
+		return 0
+	}
+	return int(sctp.GetCapabilities().MaxMessageSize)
+}
+
+// SendBulkText delivers a text reply — the JSON error envelope — over "bulk".
+// The client distinguishes success from failure by the frame's binary/text
+// flag: binary → image, text → error. Returns ErrNoBulkChannel if the peer has
+// not opened the channel yet.
+func (s *Session) SendBulkText(b string) error {
+	s.mu.Lock()
+	dc := s.bulk
+	s.mu.Unlock()
+	if dc == nil {
+		return ErrNoBulkChannel
+	}
+	return dc.SendText(b)
 }
 
 // OnClose registers a callback fired exactly once when the peer
