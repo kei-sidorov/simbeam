@@ -137,10 +137,12 @@ func (s *Session) Send(b []byte) error {
 	return dc.SendText(string(b))
 }
 
-// SendBulk delivers a binary reply — the full-resolution screenshot image
-// bytes — over the reliable ordered "bulk" DataChannel as a single message.
-// The client decodes a binary frame directly into an image. Returns
-// ErrNoBulkChannel if the peer has not opened the channel yet.
+// SendBulk delivers one binary frame — a chunk of the full-resolution
+// screenshot — over the reliable ordered "bulk" DataChannel. One frame must
+// stay within the peer's negotiated max message size (see MaxMessageSize);
+// SCTP rejects anything larger outright, which is why the image is chunked
+// rather than sent whole. Returns ErrNoBulkChannel if the peer has not opened
+// the channel yet.
 func (s *Session) SendBulk(b []byte) error {
 	s.mu.Lock()
 	dc := s.bulk
@@ -165,10 +167,11 @@ func (s *Session) MaxMessageSize() int {
 	return int(sctp.GetCapabilities().MaxMessageSize)
 }
 
-// SendBulkText delivers a text reply — the JSON error envelope — over "bulk".
-// The client distinguishes success from failure by the frame's binary/text
-// flag: binary → image, text → error. Returns ErrNoBulkChannel if the peer has
-// not opened the channel yet.
+// SendBulkText delivers a text frame over "bulk" — either the transfer header
+// announcing an image's byte count, or the JSON error envelope. The client
+// tells frames apart by the binary/text flag: text → header or error (by its
+// "type"), binary → image chunk. Returns ErrNoBulkChannel if the peer has not
+// opened the channel yet.
 func (s *Session) SendBulkText(b string) error {
 	s.mu.Lock()
 	dc := s.bulk
