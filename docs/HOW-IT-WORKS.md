@@ -262,17 +262,22 @@ first.
 
 ### The live session: control and video
 
-Two WebRTC channels carry everything from here on, peer-to-peer:
+Three WebRTC channels carry everything from here on, peer-to-peer: `control` (commands),
+`bulk` (large or must-not-drop requests) and the H.264 video track.
 
 **Control — a DataChannel labeled `control`** carries JSON commands from client to daemon and
-replies back. The client sends:
+replies back. It is **unreliable and unordered** (`maxRetransmits: 0`): a message may be dropped
+and never retried. That is right for a stream of taps — a stale tap is worse than a lost one — but
+it means anything that must arrive belongs on `bulk` instead.
+
+The client sends:
 
 | Command | Shape | Meaning |
 |---------|-------|---------|
 | list    | `{"type":"list"}` | enumerate the Mac's simulators |
 | boot    | `{"type":"boot","udid":"<udid>"}` | power on a simulator |
 | shutdown| `{"type":"shutdown","udid":"<udid>"}` | power off a simulator |
-| attach  | `{"type":"attach","udid":"<udid>"}` | start streaming this simulator's screen |
+| attach  | `{"type":"attach","udid":"<udid>","scale":<0.25–1.0>,"bitrate":<bits/s>}` | start streaming this simulator's screen; `scale`/`bitrate` optional, see [Video quality](#video-quality) |
 | detach  | `{"type":"detach"}` | stop streaming |
 | tap     | `{"type":"tap","x":0.5,"y":0.5}` | tap at normalized [0,1] coordinates |
 | swipe   | `{"type":"swipe","x1":..,"y1":..,"x2":..,"y2":..,"duration":<sec>}` | drag |
@@ -292,7 +297,7 @@ The daemon replies on the same channel:
 | sims     | `{"type":"sims","sims":[{"udid":..,"name":..,"state":..,"os_version":..}, …]}` |
 | booted   | `{"type":"booted","udid":"<udid>"}` |
 | shutdown | `{"type":"shutdown","udid":"<udid>"}` (if it was the streaming sim, a `detached` is sent first) |
-| attached | `{"type":"attached","w":<points>,"h":<points>}` (the simulator's screen size) |
+| attached | `{"type":"attached","w":<px>,"h":<px>}` (the simulator's **native** screen size — see below) |
 | detached | `{"type":"detached"}` |
 | error    | `{"type":"error","msg":"<reason>","code":"<machine code>"}` |
 
@@ -308,10 +313,121 @@ moment the client opens the `control` channel (before any command). It carries:
   [Pairing](#pairing)). Either string field may be absent if the daemon couldn't read it; the
   client just omits that subtitle.
 
+**Bulk — a DataChannel labeled `bulk`** is **reliable and ordered**, and unlike `control` it is
+created by the **client**; the daemon routes it by label. It carries what `control` must not: a
+request too large for one message, or one that may not be silently dropped. Two requests exist:
+
+| Request | Shape | Reply |
+|---------|-------|-------|
+| screenshot | `{"type":"screenshot"}` | a full-resolution PNG, chunked — see [Full-resolution screenshots](#full-resolution-screenshots) |
+| quality    | `{"type":"quality","scale":<0.25–1.0>,"bitrate":<bits/s>}` | `{"type":"quality","scale":…,"bitrate":…}` — what actually took effect |
+
+Every bulk request gets a reply: the payload above, or `{"type":"error","msg":"<reason>"}`. Keep
+one request in flight — replies carry no correlation id, and a `screenshot` capture can occupy the
+channel for up to 15s.
+
 **Video — an H.264 track** flows from daemon to client. The track is negotiated up front but stays
 **silent until you `attach` a simulator**. On `attach`, the daemon starts capturing that simulator
 and pushing H.264; on `detach` (or a new `attach`), it stops. You don't renegotiate the WebRTC
 session to switch simulators — the video track just goes quiet and resumes.
+
+### Full-resolution screenshots
+
+The video track is lossy and downscaled, so a screenshot is **not** grabbed from it. `{"type":
+"screenshot"}` on `bulk` makes the daemon capture the attached device fresh, at its **native full
+resolution**, straight from the source — bypassing the video pipeline entirely.
+
+A PNG of a retina screen is several megabytes, far past what one SCTP message can carry, so the
+reply is a **header followed by binary chunks**:
+
+```
+← {"type":"screenshot","bytes":3145728}    ← text frame: total size
+← <binary chunk>                            ← binary frames …
+← <binary chunk>
+← <binary chunk>                            ← … concatenating to exactly 3145728 bytes
+```
+
+**Reassembly:** append the binary frames in arrival order until you hold exactly `bytes` bytes.
+That is the complete PNG. There are no sequence numbers and none are needed — `bulk` is reliable
+and ordered, so chunks cannot arrive out of order or go missing. The header's `bytes` is your only
+end-of-transfer signal; the daemon sends no terminator.
+
+**Success vs failure is the frame type, not the content.** A successful transfer is one *text*
+frame (the header) followed by *binary* frames. A failure is a single *text* frame:
+`{"type":"error","msg":"<reason>"}`. Branch on whether the frame arrived as binary or text — do not
+try to parse a chunk as JSON. Errors you should expect: nothing attached, the capture failed, or
+the capture came back empty.
+
+**Chunk size is the daemon's business, not a constant to hardcode.** It sizes each frame from the
+message cap your peer actually negotiated (capped at 200 KiB), so it adapts to your client. Just
+append whatever arrives.
+
+**The daemon always replies** — image or error — and bounds the capture at ~15s so a wedged
+simulator can't leave you waiting on your own timeout.
+
+### Video quality
+
+The client chooses the stream's quality; the daemon owns the allowed range. Two knobs:
+
+| Field | Range | Meaning |
+|-------|-------|---------|
+| `scale`   | `0.25` – `1.0` | resolution multiplier of the device's **native** capture. `1.0` = full retina, `0.5` = each dimension halved (a quarter of the pixels). |
+| `bitrate` | `500000` – `16000000` | H.264 target, bits/s. |
+
+**There are no presets on the wire — the daemon takes numbers.** Presets are the client's to define
+and name; keeping them out of the daemon means the client is free to offer whatever UI it likes.
+
+**Omit a field (or send `0`) to get the daemon's default**, which is what the stream has always
+been: `scale` `0.5` for a simulator, `1.0` for the hosted demo device; `bitrate` `8000000` for both.
+A client that sends neither field streams exactly as it did before this feature existed.
+
+**Out of range clamps — it does not fail.** Ask for `scale: 9` and you get `1.0`. This is why the
+reply echoes the applied values: they are what the daemon *did*, not what you asked for. Render
+your UI from the echo, or it will show a preset that never took effect.
+
+**Two ways to set it:**
+
+- **On `attach` (control channel)** — the starting quality. The feed spawns with it directly.
+- **Mid-session via `quality` (bulk channel)** — changes the live stream without a re-attach on
+  your side. Use this when the network shifts under a session; that is what the knob is for.
+
+`quality` deliberately rides `bulk` and not `control`: `control` may drop the message, and it would
+do so on exactly the degraded link that makes you want to lower quality.
+
+**What a change looks like on screen.** The picture freezes on the last frame and resumes at the new
+quality after **roughly 1.5s** on a simulator: the daemon rebuilds the whole capture feed, and
+respawning the `idb_companion` sidecar alone measures ~1.2s. Budget for it in the UI — a slider that
+re-requests on every drag will stutter badly, so commit on release, and show that something is
+happening.
+
+The WebRTC session is *not* renegotiated and the track does not restart; the new keyframe resyncs
+your decoder, resolution change included. `<video>` (or your native decoder) will report the new
+dimensions on its own.
+
+Note the reply comes back **immediately**, before the new feed is up — it confirms the daemon
+accepted the values, not that the picture has changed. If the re-attach then fails, that surfaces on
+`control` as an `error`, exactly like any other failed attach.
+
+**`quality` needs a live feed.** With nothing attached it replies `error` — it is a change to a
+running stream, not a stored preference. Put the starting quality on `attach`.
+
+**Why there is no `fps`.** Capture, not encoding, is the ceiling: one screenshot from the simulator
+costs ~72ms while the daemon polls every ~67ms, so 15fps is what the source can physically give. A
+knob would promise what the pipeline cannot deliver. (Adaptive bitrate — the daemon adjusting on its
+own — is deliberately not built either; quality is the client's explicit choice.)
+
+**Detecting a daemon that predates this feature.** Probe with `quality` on `bulk`: an older daemon
+answers `{"type":"error","msg":"unknown bulk type \"quality\""}`, and you can hide the control.
+**Do not probe with `attach`** — an older daemon silently ignores unknown JSON fields and attaches
+at its own numbers, so a `scale` you send appears to succeed and does nothing. This matters in
+practice: the client updates itself through the App Store while the daemon is upgraded by hand, so
+a new client will meet old daemons.
+
+**On `attached`'s `w`/`h`.** They are the simulator's **native** pixel size — *not* the video
+track's resolution, which is `scale` times smaller. Nothing breaks because of this: touch
+coordinates are normalized `[0,1]` against the displayed frame, so only the aspect ratio matters
+and scaling preserves it. Use `w`/`h` for aspect; read the track's real dimensions from your
+decoder.
 
 ### Error codes
 
@@ -452,7 +568,7 @@ Rules and behavior:
 | **WebRTC** | The browser/native standard for real-time peer-to-peer audio/video/data. Carries the video and control channel. |
 | **SDP** | Session Description Protocol — the text blob describing a WebRTC connection, exchanged as **offer** and **answer**. |
 | **Offerer / Answerer** | In a WebRTC handshake, the side that proposes the session (client) vs. the side that responds (daemon). |
-| **DataChannel** | A WebRTC channel for arbitrary data (here: JSON control commands), separate from the media track. |
+| **DataChannel** | A WebRTC channel for arbitrary data, separate from the media track. Two here: `control` (commands/input, unreliable) and `bulk` (screenshots and quality changes, reliable+ordered). |
 | **ICE** | Interactive Connectivity Establishment — how WebRTC discovers a working network path between two peers. |
 | **ICE candidate / host candidate** | A possible address/path for the connection; a *host* candidate is a direct local-network address. |
 | **STUN** | A lightweight server that tells a peer its public address so two peers can connect **directly**. Free, always offered. |
