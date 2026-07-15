@@ -59,11 +59,28 @@ type bulkHeader struct {
 	Bytes int    `json:"bytes"`
 }
 
+// Error codes carried by bulkErr.Code alongside the human text, so a client can
+// branch on a stable machine value instead of grepping the message (decision
+// №80, same contract as signal.Msg).
+//
+// CodeUnknownType is load-bearing beyond mere hygiene: it is how a client
+// detects a daemon too old to support a request. Probing with {"type":"quality"}
+// BEFORE attaching costs nothing (no feed exists to rebuild) and separates
+// "unsupported" from "unattached" — whereas probing with attach cannot work at
+// all, since an old daemon silently ignores unknown JSON fields.
+const (
+	CodeUnknownType   = "unknown_type"   // this daemon has no such bulk request (i.e. it predates it)
+	CodeBadRequest    = "bad_request"    // the request was not valid JSON
+	CodeNoAttachment  = "no_attachment"  // nothing is attached to act on
+	CodeCaptureFailed = "capture_failed" // the capture itself failed; the request was fine
+)
+
 // bulkErr is the text error envelope sent back on "bulk" when a request cannot
 // be satisfied.
 type bulkErr struct {
 	Type string `json:"type"` // always "error"
 	Msg  string `json:"msg"`
+	Code string `json:"code,omitempty"`
 }
 
 // handleBulk processes one inbound "bulk" message. It runs on pion's per-channel
@@ -74,7 +91,7 @@ type bulkErr struct {
 func (d *rtcDispatch) handleBulk(data []byte) {
 	var m bulkMsg
 	if err := json.Unmarshal(data, &m); err != nil {
-		d.bulkError("bad bulk json")
+		d.bulkError(CodeBadRequest, "bad bulk json")
 		return
 	}
 	switch m.Type {
@@ -83,7 +100,7 @@ func (d *rtcDispatch) handleBulk(data []byte) {
 	case "quality":
 		d.doQuality(QualityOpts{Scale: m.Scale, Bitrate: m.Bitrate})
 	default:
-		d.bulkError(fmt.Sprintf("unknown bulk type %q", m.Type))
+		d.bulkError(CodeUnknownType, fmt.Sprintf("unknown bulk type %q", m.Type))
 	}
 }
 
@@ -102,7 +119,7 @@ func (d *rtcDispatch) doQuality(q QualityOpts) {
 	att := d.att
 	d.mu.Unlock()
 	if att == nil {
-		d.bulkError("no simulator attached")
+		d.bulkError(CodeNoAttachment, "no simulator attached")
 		return
 	}
 	udid := att.udid
@@ -126,7 +143,7 @@ func (d *rtcDispatch) doScreenshot() {
 	att := d.att
 	d.mu.Unlock()
 	if att == nil {
-		d.bulkError("no simulator attached")
+		d.bulkError(CodeNoAttachment, "no simulator attached")
 		return
 	}
 	ctx, cancel := context.WithTimeout(d.baseCtx, screenshotTimeout)
@@ -135,17 +152,17 @@ func (d *rtcDispatch) doScreenshot() {
 	img, err := att.feed.Screenshot(ctx)
 	if err != nil {
 		log.Printf("screenshot: capture failed after %v: %v", time.Since(started), err)
-		d.bulkError(err.Error())
+		d.bulkError(CodeCaptureFailed, err.Error())
 		return
 	}
 	if len(img) == 0 {
 		log.Print("screenshot: capture returned no bytes")
-		d.bulkError("capture returned no bytes")
+		d.bulkError(CodeCaptureFailed, "capture returned no bytes")
 		return
 	}
 	if err := d.sendImage(img); err != nil {
 		log.Printf("screenshot: sending %d bytes failed: %v", len(img), err)
-		d.bulkError(fmt.Sprintf("send failed: %v", err))
+		d.bulkError(CodeCaptureFailed, fmt.Sprintf("send failed: %v", err))
 		return
 	}
 	log.Printf("screenshot: sent %d bytes in %v", len(img), time.Since(started))
@@ -192,12 +209,14 @@ func (d *rtcDispatch) sendImage(img []byte) error {
 	return nil
 }
 
-func (d *rtcDispatch) bulkError(msg string) {
-	b, err := json.Marshal(bulkErr{Type: "error", Msg: msg})
+// bulkError replies with the text error envelope. code is the stable value the
+// client branches on; msg is for humans and may be reworded freely.
+func (d *rtcDispatch) bulkError(code, msg string) {
+	b, err := json.Marshal(bulkErr{Type: "error", Msg: msg, Code: code})
 	if err != nil || d.sendBulkText == nil {
 		return
 	}
 	if err := d.sendBulkText(string(b)); err != nil {
-		log.Printf("screenshot: sending error envelope %q failed: %v", msg, err)
+		log.Printf("bulk: sending error envelope %q failed: %v", msg, err)
 	}
 }

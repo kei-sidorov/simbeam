@@ -139,7 +139,9 @@ func TestBulkQualityUnsetFieldsDefault(t *testing.T) {
 }
 
 // Quality without a live feed is an error, not a stored preference: the starting
-// quality is attach's job and there is no feed here to re-encode.
+// quality is attach's job and there is no feed here to re-encode. Crucially it
+// must NOT attach anything — this is the state a client probes from, and a probe
+// that spawned a feed would cost ~1.5s.
 func TestBulkQualityWithoutAttachErrors(t *testing.T) {
 	c := &stubComp{}
 	sink := &bulkSink{}
@@ -150,25 +152,78 @@ func TestBulkQualityWithoutAttachErrors(t *testing.T) {
 	if n := len(c.qualities()); n != 0 {
 		t.Fatalf("want no attach, got %d", n)
 	}
-	if errs := sink.errors(); len(errs) != 1 {
-		t.Fatalf("want 1 error envelope, got %v", sink.txt)
-	}
-}
-
-// An old daemon replies "unknown bulk type" to a quality request, and that is the
-// client's ONLY reliable way to detect that quality is unsupported — attach
-// silently ignores unknown fields (encoding/json). Pin the shape.
-func TestBulkUnknownTypeStillErrors(t *testing.T) {
-	sink := &bulkSink{}
-	d := newBulkDispatch(&stubComp{}, sink)
-
-	d.handleBulk([]byte(`{"type":"nonsense"}`))
-
 	errs := sink.errors()
 	if len(errs) != 1 {
 		t.Fatalf("want 1 error envelope, got %v", sink.txt)
 	}
-	if errs[0].Msg != `unknown bulk type "nonsense"` {
-		t.Fatalf("msg = %q, want the unknown-type wording the client matches on", errs[0].Msg)
+	if errs[0].Code != CodeNoAttachment {
+		t.Fatalf("code = %q, want %q", errs[0].Code, CodeNoAttachment)
+	}
+}
+
+// The version probe. A client cannot ask attach whether quality is supported —
+// an old daemon silently ignores unknown JSON fields — so it sends quality on
+// bulk BEFORE attaching. The two daemons must be distinguishable by code alone,
+// and neither answer may cost a feed spawn.
+//
+// This daemon:     quality → no_attachment  (understood, nothing to apply it to)
+// A daemon too old: quality → unknown_type  (no such request)
+func TestBulkQualityProbeBeforeAttachIsFreeAndDistinguishable(t *testing.T) {
+	c := &stubComp{}
+	sink := &bulkSink{}
+	d := newBulkDispatch(c, sink)
+
+	// What a probing client sends against THIS daemon.
+	d.handleBulk([]byte(`{"type":"quality"}`))
+	// What the same probe hits on a daemon that predates quality: its dispatch
+	// has no such case, so it falls through to the unknown-type default.
+	d.handleBulk([]byte(`{"type":"nonsense"}`))
+
+	if n := len(c.qualities()); n != 0 {
+		t.Fatalf("probing must not attach anything, got %d attaches", n)
+	}
+	errs := sink.errors()
+	if len(errs) != 2 {
+		t.Fatalf("want 2 error envelopes, got %v", sink.txt)
+	}
+	if errs[0].Code != CodeNoAttachment {
+		t.Fatalf("supported-daemon probe: code = %q, want %q", errs[0].Code, CodeNoAttachment)
+	}
+	if errs[1].Code != CodeUnknownType {
+		t.Fatalf("old-daemon probe: code = %q, want %q", errs[1].Code, CodeUnknownType)
+	}
+	if errs[0].Code == errs[1].Code {
+		t.Fatal("probe cannot distinguish a supported daemon from an old one")
+	}
+}
+
+func TestBulkErrorCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{"unknown type", `{"type":"nonsense"}`, CodeUnknownType},
+		{"malformed json", `{not json`, CodeBadRequest},
+		{"screenshot with nothing attached", `{"type":"screenshot"}`, CodeNoAttachment},
+		{"quality with nothing attached", `{"type":"quality"}`, CodeNoAttachment},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &bulkSink{}
+			d := newBulkDispatch(&stubComp{}, sink)
+
+			d.handleBulk([]byte(tc.msg))
+
+			errs := sink.errors()
+			if len(errs) != 1 {
+				t.Fatalf("want 1 error envelope, got %v", sink.txt)
+			}
+			if errs[0].Code != tc.want {
+				t.Fatalf("code = %q, want %q", errs[0].Code, tc.want)
+			}
+			if errs[0].Msg == "" {
+				t.Fatal("msg must stay human-readable alongside the code")
+			}
+		})
 	}
 }

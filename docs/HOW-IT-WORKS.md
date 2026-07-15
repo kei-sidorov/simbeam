@@ -322,9 +322,17 @@ request too large for one message, or one that may not be silently dropped. Two 
 | screenshot | `{"type":"screenshot"}` | a full-resolution PNG, chunked — see [Full-resolution screenshots](#full-resolution-screenshots) |
 | quality    | `{"type":"quality","scale":<0.25–1.0>,"bitrate":<bits/s>}` | `{"type":"quality","scale":…,"bitrate":…}` — what actually took effect |
 
-Every bulk request gets a reply: the payload above, or `{"type":"error","msg":"<reason>"}`. Keep
-one request in flight — replies carry no correlation id, and a `screenshot` capture can occupy the
+Every bulk request gets a reply: the payload above, or
+`{"type":"error","msg":"<reason>","code":"<machine code>"}` — branch on `code`, never on `msg`. Keep
+one request in flight: replies carry no correlation id, and a `screenshot` capture can occupy the
 channel for up to 15s.
+
+| `code` | Meaning |
+|--------|---------|
+| `unknown_type`   | This daemon has no such request — i.e. it predates it. See [detecting an old daemon](#video-quality). |
+| `bad_request`    | The request wasn't valid JSON. |
+| `no_attachment`  | Nothing is attached to act on. `attach` first. |
+| `capture_failed` | The request was fine; the capture or its transfer failed. Retryable. |
 
 **Video — an H.264 track** flows from daemon to client. The track is negotiated up front but stays
 **silent until you `attach` a simulator**. On `attach`, the daemon starts capturing that simulator
@@ -385,11 +393,16 @@ A client that sends neither field streams exactly as it did before this feature 
 reply echoes the applied values: they are what the daemon *did*, not what you asked for. Render
 your UI from the echo, or it will show a preset that never took effect.
 
-**Two ways to set it:**
+**Two ways to set it, and they are not interchangeable:**
 
-- **On `attach` (control channel)** — the starting quality. The feed spawns with it directly.
-- **Mid-session via `quality` (bulk channel)** — changes the live stream without a re-attach on
-  your side. Use this when the network shifts under a session; that is what the knob is for.
+- **On `attach` (control channel)** — the starting quality. The feed spawns with it directly, so
+  this is **free**: one feed, one build.
+- **Mid-session via `quality` (bulk channel)** — changes a *live* stream. This **rebuilds the feed**
+  (see the cost below). Use it when the network shifts under a session; that is what it is for.
+
+> **Put your starting quality on `attach`.** Attaching first and then sending `quality` builds the
+> feed twice and adds ~1.5s to every session start, for nothing. If your client has no mid-session
+> control at all, you never need to send `quality` — the `attach` fields are the whole feature.
 
 `quality` deliberately rides `bulk` and not `control`: `control` may drop the message, and it would
 do so on exactly the degraded link that makes you want to lower quality.
@@ -416,12 +429,22 @@ costs ~72ms while the daemon polls every ~67ms, so 15fps is what the source can 
 knob would promise what the pipeline cannot deliver. (Adaptive bitrate — the daemon adjusting on its
 own — is deliberately not built either; quality is the client's explicit choice.)
 
-**Detecting a daemon that predates this feature.** Probe with `quality` on `bulk`: an older daemon
-answers `{"type":"error","msg":"unknown bulk type \"quality\""}`, and you can hide the control.
+**Detecting a daemon that predates this feature.** This matters in practice: the client updates
+itself through the App Store while the daemon is upgraded by hand, so a new client *will* meet old
+daemons.
+
 **Do not probe with `attach`** — an older daemon silently ignores unknown JSON fields and attaches
-at its own numbers, so a `scale` you send appears to succeed and does nothing. This matters in
-practice: the client updates itself through the App Store while the daemon is upgraded by hand, so
-a new client will meet old daemons.
+at its own numbers, so the `scale` you sent appears to succeed and does nothing.
+
+Probe with `quality` on `bulk` **before you attach**. With nothing attached there is no feed to
+rebuild, so the probe is free, and the two daemons answer with different codes:
+
+| Daemon | Reply to `{"type":"quality"}` with nothing attached |
+|--------|-----------------------------------------------------|
+| supports quality | `code: "no_attachment"` — it understood, there was just nothing to apply it to |
+| too old          | `code: "unknown_type"` — no such request; hide the control |
+
+Probing *after* attaching would work too, but it would rebuild the feed and cost you ~1.5s.
 
 **On `attached`'s `w`/`h`.** They are the simulator's **native** pixel size — *not* the video
 track's resolution, which is `scale` times smaller. Nothing breaks because of this: touch
@@ -431,9 +454,11 @@ decoder.
 
 ### Error codes
 
-Every `error` message — whether from the broker during signalling or from the daemon over the
-control channel — carries a human-readable `msg` **and** a stable machine `code`. Branch on
-`code`, not on the text of `msg` (the text may change). The codes:
+Every `error` message — from the broker during signalling, or from the daemon over `control` —
+carries a human-readable `msg` **and** a stable machine `code`. Branch on `code`, not on the text of
+`msg` (the text may change). `bulk` errors follow the same contract with their own codes, listed
+with the bulk channel in [the live session](#the-live-session-control-and-video). The signalling and
+control codes:
 
 | `code` | Sent by | Meaning |
 |--------|---------|---------|
