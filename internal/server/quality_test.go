@@ -3,10 +3,14 @@ package server
 import "testing"
 
 // Zero fields mean "unset", which is exactly what an old client's attach (no
-// scale/bitrate on the wire) unmarshals to. Resolving them MUST reproduce
-// today's hardcoded behaviour, or upgrading the daemon silently re-tunes every
+// scale/bitrate on the wire) unmarshals to. Resolving them MUST yield the values
+// that used to be hardcoded, or upgrading the daemon silently re-tunes every
 // existing client's stream.
-func TestResolveDefaultsMatchLegacyBehaviour(t *testing.T) {
+//
+// This pins the resolved values, not the resulting pixels: the scale filter
+// changed shape at the same time, so an odd-dimension source lands within a
+// couple of px of the old output rather than on it exactly (see encoder.Encode).
+func TestResolveDefaultsMatchLegacyValues(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		defScale float64

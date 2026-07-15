@@ -47,6 +47,15 @@ type rtcDispatch struct {
 
 	mu  sync.Mutex
 	att *attachment
+	// gen counts attach intents. An attach can run concurrently with another
+	// (quality arrives on bulk's goroutine, attach/detach on control's), and
+	// backend.Attach is slow, so an attempt compares the generation it claimed
+	// against gen before installing its feed. See claimAttach.
+	gen uint64
+	// pending is the udid of an attach in flight — after the old feed is gone
+	// and before the new one is installed. Without it that window looks idle to
+	// shutdown, which would then let the spawn race a powering-off simulator.
+	pending string
 }
 
 // sendHello pushes the unsolicited "hello" greeting the moment the control
@@ -77,7 +86,7 @@ func (d *rtcDispatch) handle(data []byte) {
 	case "shutdown":
 		d.doShutdown(m.UDID)
 	case "attach":
-		d.doAttach(m.UDID, m.quality())
+		d.doAttach(m.UDID, m.QualityOpts)
 	case "detach":
 		d.stopAttachment()
 		d.reply(ctrlReply{Type: "detached"})
@@ -118,7 +127,7 @@ func (d *rtcDispatch) doShutdown(udid string) {
 	// out from under the sidecar would break the pump anyway. A feed of some
 	// other simulator is left untouched.
 	d.mu.Lock()
-	current := d.att != nil && d.att.udid == udid
+	current := d.streaming(udid)
 	d.mu.Unlock()
 	if current {
 		// Tear down the feed AND tell the client it ended, so its attachment

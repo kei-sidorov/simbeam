@@ -35,11 +35,20 @@ const (
 // frame than the 15fps poll interval, so capture is already the ceiling and a
 // knob would promise what the pipeline cannot do.
 //
-// A zero field means "unset", which is what an old client's attach unmarshals to
-// — hence the defaults below reproduce today's hardcoded behaviour exactly.
+// A zero field means "unset", which is what an old client's attach unmarshals
+// to; Resolve then supplies the backend's default, so an old client keeps the
+// stream it has always had.
+//
+// This is embedded into every wire struct that carries quality (controlMsg,
+// bulkMsg, bulkQuality) rather than copied into each: encoding/json flattens an
+// embedded struct, so the fields land at the top level of those messages exactly
+// as before, and there is one place to change if a knob is ever added. Note the
+// tags must NOT use omitempty — on the reply, an applied scale is meaningful and
+// must be sent even in the (unreachable) zero case, and silently dropping it
+// would look to a client like "the daemon ignored me".
 type QualityOpts struct {
-	Scale   float64 `json:"scale,omitempty"`   // resolution multiplier of the source; 0 → backend default
-	Bitrate int     `json:"bitrate,omitempty"` // target bits/s; 0 → DefaultBitrate
+	Scale   float64 `json:"scale"`   // resolution multiplier of the source; 0 → backend default
+	Bitrate int     `json:"bitrate"` // target bits/s; 0 → DefaultBitrate
 }
 
 // Resolve fills unset fields and clamps the rest into range. defScale differs per

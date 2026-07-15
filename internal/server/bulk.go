@@ -37,18 +37,18 @@ const bulkChunkFallback = 16 * 1024
 // (maxRetransmits: 0) and would silently drop the request on exactly the bad
 // network that motivates lowering quality (decision №88).
 type bulkMsg struct {
-	Type    string  `json:"type"`    // screenshot|quality
-	Scale   float64 `json:"scale"`   // quality: resolution multiplier; 0 → backend default
-	Bitrate int     `json:"bitrate"` // quality: target bits/s; 0 → default
+	Type string `json:"type"` // screenshot|quality
+	// QualityOpts carries quality's "scale"/"bitrate" (embedded → top-level
+	// fields). Ignored by screenshot, which takes no parameters.
+	QualityOpts
 }
 
 // bulkQuality echoes the quality that actually took effect, after unset fields
 // were defaulted and out-of-range ones clamped — otherwise a client whose
 // request was clamped would render a preset the daemon never applied.
 type bulkQuality struct {
-	Type    string  `json:"type"` // always "quality"
-	Scale   float64 `json:"scale"`
-	Bitrate int     `json:"bitrate"`
+	Type string `json:"type"` // always "quality"
+	QualityOpts
 }
 
 // bulkHeader announces an image transfer: the binary chunks that follow
@@ -98,7 +98,7 @@ func (d *rtcDispatch) handleBulk(data []byte) {
 	case "screenshot":
 		d.doScreenshot()
 	case "quality":
-		d.doQuality(QualityOpts{Scale: m.Scale, Bitrate: m.Bitrate})
+		d.doQuality(m.QualityOpts)
 	default:
 		d.bulkError(CodeUnknownType, fmt.Sprintf("unknown bulk type %q", m.Type))
 	}
@@ -108,25 +108,26 @@ func (d *rtcDispatch) handleBulk(data []byte) {
 // took effect. Nothing attached → error: the starting quality is attach's job,
 // and there is no feed here to remember a setting for.
 //
-// The re-attach runs on its own goroutine: it tears down and respawns the feed
-// (backend.Attach blocks on feed readiness), and handleBulk's goroutine must
-// stay free — doScreenshot can occupy it for up to screenshotTimeout. The reply
-// therefore reports the requested-and-clamped quality rather than a completed
-// attach; failures surface on control as doAttach's "error", the same as any
+// Only the backend spawn runs on its own goroutine; the teardown and the
+// generation claim happen here, synchronously. That split is deliberate:
+// handleBulk's goroutine must stay free (doScreenshot can hold it for up to
+// screenshotTimeout), but claiming the generation inside the goroutine would
+// race a detach that lands before the scheduler runs it, and the rebuild would
+// then install a feed the client already dismissed.
+//
+// The reply reports the requested-and-clamped quality rather than a completed
+// attach; failures surface on control as attachAs's "error", the same as any
 // other attach.
 func (d *rtcDispatch) doQuality(q QualityOpts) {
-	d.mu.Lock()
-	att := d.att
-	d.mu.Unlock()
-	if att == nil {
+	udid, gen, ok := d.restartAttachment()
+	if !ok {
 		d.bulkError(CodeNoAttachment, "no simulator attached")
 		return
 	}
-	udid := att.udid
 	q = q.Resolve(d.backend.DefaultScale())
-	go d.doAttach(udid, q)
+	go d.attachAs(udid, q, gen)
 
-	b, err := json.Marshal(bulkQuality{Type: "quality", Scale: q.Scale, Bitrate: q.Bitrate})
+	b, err := json.Marshal(bulkQuality{Type: "quality", QualityOpts: q})
 	if err != nil || d.sendBulkText == nil {
 		return
 	}

@@ -57,6 +57,12 @@ func Available() error {
 //
 // At 1.0 the filter is omitted entirely rather than made an identity — a source
 // already at target resolution should not pay for a scaler pass.
+//
+// Note this is NOT byte-identical to the old scale=iw/2:ih/2 on a source with an
+// odd dimension: that halved each axis independently (1179x2556 → 588x1278),
+// while deriving the height with -2 tracks the scaled width's aspect
+// (1179x2556 → 588x1274). The new size is 4px shorter and its aspect is closer
+// to the source's; both are cosmetic, since coordinates are normalized.
 func ffmpegArgs(fps int, scale float64, bitrate int) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "warning",
@@ -65,7 +71,11 @@ func ffmpegArgs(fps int, scale float64, bitrate int) []string {
 		"-an",
 	}
 	if scale != 1 {
-		args = append(args, "-vf", fmt.Sprintf("scale=trunc(iw*%g/2)*2:-2", scale))
+		// 'f' (never scientific) matters: %g would render a small factor as
+		// "1e-05", which ffmpeg's expression parser does not accept. Today
+		// Resolve's floor keeps scale well clear of that, but the filter should
+		// not silently depend on a bound set two packages away.
+		args = append(args, "-vf", "scale=trunc(iw*"+strconv.FormatFloat(scale, 'f', -1, 64)+"/2)*2:-2")
 	}
 	args = append(args, "-c:v", encoderName())
 	// Low-latency knobs are encoder-specific; the shared flags above/below carry
@@ -87,9 +97,18 @@ func ffmpegArgs(fps int, scale float64, bitrate int) []string {
 // (then the channel closes and ffmpeg is killed via the command context).
 //
 // scale (0 < scale <= 1) downsizes each dimension; bitrate is the target in
-// bits/s. Callers pass values the client asked for, already clamped — the
-// encoder trusts them and only enforces the pixel-parity yuv420p needs.
+// bits/s. Both are rejected outright when out of range rather than passed to
+// ffmpeg: scale 0 builds a zero-width filter and ffmpeg dies at startup, which
+// reaches the caller only as "ffmpeg exited unexpectedly" on a log line with no
+// hint of the cause. Deciding the *default* for an unset value stays the
+// backend's job (server.QualityOpts.Resolve) — this is only a precondition.
 func Encode(ctx context.Context, png <-chan []byte, fps int, scale float64, bitrate int) (<-chan Frame, error) {
+	if scale <= 0 || scale > 1 {
+		return nil, fmt.Errorf("encode: scale %v out of range (0,1]", scale)
+	}
+	if bitrate <= 0 {
+		return nil, fmt.Errorf("encode: bitrate %d must be positive", bitrate)
+	}
 	cmd := exec.CommandContext(ctx, "ffmpeg", ffmpegArgs(fps, scale, bitrate)...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
