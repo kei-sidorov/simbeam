@@ -60,12 +60,20 @@ homebrew_casks:
     homepage: "https://github.com/kei-sidorov/simcast"
     description: "simcast daemon — stream an iOS simulator from Mac to iPad"
     dependencies:
-      - formula: idb-companion
+      # idb-companion is NOT in homebrew-core — it lives in Meta's facebook/fb
+      # tap. A bare "idb-companion" only resolves on a machine that already
+      # tapped facebook/fb (e.g. the author's), so a fresh Mac saw "No available
+      # formula". The owner/tap/formula form makes brew auto-tap it; the caveat
+      # below documents the tap as a fallback in case auto-tap misbehaves.
+      - formula: facebook/fb/idb-companion
       - formula: ffmpeg
     caveats: |
       simcastd is shipped as an unsigned binary. The cask's post-install hook
       strips the macOS quarantine attribute so Gatekeeper should not block it.
       simcastd shells out to idb_companion (simulators) and ffmpeg (h264_videotoolbox).
+
+      idb_companion comes from Meta's tap. If install fails to find it, run:
+        brew tap facebook/fb
     hooks:
       post:
         install: |
