@@ -9,7 +9,7 @@ syntax = "proto3";
 
 package idb;
 
-option go_package = "github.com/kei-sidorov/simcast/internal/idbpb;idbpb";
+option go_package = "github.com/kei-sidorov/simbeam/internal/idbpb;idbpb";
 
 // The idb companion service definition.
 service CompanionService {

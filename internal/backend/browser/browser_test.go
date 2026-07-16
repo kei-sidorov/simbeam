@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kei-sidorov/simcast/internal/server"
+	"github.com/kei-sidorov/simbeam/internal/server"
 )
 
 func TestListExposesOneBootedDemoDevice(t *testing.T) {

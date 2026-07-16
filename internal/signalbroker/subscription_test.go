@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 func TestSubscriptionEndpoint_TwoSigUpsertAndGate(t *testing.T) {

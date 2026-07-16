@@ -1,4 +1,4 @@
-# How simcast works
+# How simbeam works
 
 A plain-language tour of the protocol: the actors, what happens on first connect,
 how pairing works, how a paired session talks, and how TURN and subscriptions fit in.
@@ -16,8 +16,8 @@ A [glossary](#glossary) at the bottom explains every abbreviation.
 
 | Actor | Where it runs | What it does |
 |-------|---------------|--------------|
-| **Daemon** (`simcastd`) | on the Mac | Owns the simulators. Streams H.264 video, accepts touch/keyboard input. Has a permanent cryptographic identity. |
-| **Broker** (`simcast-signal`) | on a server (public or self-hosted) | A meeting point. Helps a client and a daemon find each other and exchange a WebRTC handshake. Also issues TURN credentials and stores subscriptions. |
+| **Daemon** (`simbeamd`) | on the Mac | Owns the simulators. Streams H.264 video, accepts touch/keyboard input. Has a permanent cryptographic identity. |
+| **Broker** (`simbeam-signal`) | on a server (public or self-hosted) | A meeting point. Helps a client and a daemon find each other and exchange a WebRTC handshake. Also issues TURN credentials and stores subscriptions. |
 | **Client** | iPad app / browser | Watches which Macs are online, pairs with a Mac once, then connects to see and control a simulator. |
 
 ### What the broker is — and isn't
@@ -38,7 +38,7 @@ keys (see [Pairing](#pairing) and [Connecting](#connecting-a-paired-session)). T
 *untrusted by design*.
 
 Everything the daemon does is **outbound**: it dials the broker, it never listens for inbound
-connections. The Mac opens **zero ports**. This is why simcast works from behind a home
+connections. The Mac opens **zero ports**. This is why simbeam works from behind a home
 router without any port forwarding.
 
 ---
@@ -50,7 +50,7 @@ The very first message you send declares who you are and what you want.
 
 ### The daemon comes online
 
-When `simcastd` starts (or wakes from sleep), it dials the broker and **registers**:
+When `simbeamd` starts (or wakes from sleep), it dials the broker and **registers**:
 
 ```json
 { "type": "register", "role": "daemon", "daemon": "<daemonID>" }
@@ -181,7 +181,7 @@ The broker relays the join to the daemon as a **connect**:
 
 The daemon recomputes the same HMAC with its secret `S`. If it matches and the pairing window
 is still open, the daemon **pins** `clientPubKey` — it saves the client's public key to its
-trusted list (`~/.simcast/clients.json`). From now on, this client is recognized and the
+trusted list (`~/.simbeam/clients.json`). From now on, this client is recognized and the
 pairing window is burned (one-time use). If that save fails, the daemon refuses the connection
 rather than pretending to pair, so a client is never told it paired when it didn't.
 
@@ -192,7 +192,7 @@ A client should treat pairing as **confirmed only on that `hello`**: if it saved
 optimistically on scan but the connection drops before `hello` arrives, the pin may not have
 landed — discard and re-pair rather than leaving a Mac that's saved on the client but unknown to
 the daemon (and therefore permanently unreachable). A revoked device is removed with
-`simcastd unpair <clientPubKey>`.
+`simbeamd unpair <clientPubKey>`.
 
 That's pairing: a one-time, secret-gated introduction that ends with **the daemon trusting the
 client's public key** and **the client trusting the daemon's public key**. Neither secret nor
@@ -581,8 +581,8 @@ Rules and behavior:
 
 | Term | Meaning |
 |------|---------|
-| **Daemon** | `simcastd`, the program on the Mac that owns the simulators and serves the stream. |
-| **Broker** | `simcast-signal`, the rendezvous/signalling server that helps peers find each other. |
+| **Daemon** | `simbeamd`, the program on the Mac that owns the simulators and serves the stream. |
+| **Broker** | `simbeam-signal`, the rendezvous/signalling server that helps peers find each other. |
 | **Client** | The iPad app (or browser) that views and controls a simulator. |
 | **daemonID** | The daemon's Ed25519 **public key** (base64). Stable per Mac; serves as its address on the broker. Public, not a secret. |
 | **clientPubKey** | The client's Ed25519 public key. Pinned by the daemon during pairing; identifies the account. |
@@ -609,4 +609,4 @@ Rules and behavior:
 | **App secret** | A shared HMAC key (`SIMCAST_APP_SECRET`) baked into the client; a weak "is this our build" check on the subscription API. |
 | **UDID** | The unique identifier of a specific iOS simulator on the Mac. |
 | **idb / idb_companion** | Meta's open-source tool the daemon drives to capture the simulator screen and inject input. |
-| **GOP / keyframe** | H.264 video structure terms; simcast re-encodes frames to keep keyframes frequent for low latency. |
+| **GOP / keyframe** | H.264 video structure terms; simbeam re-encodes frames to keep keyframes frequent for low latency. |

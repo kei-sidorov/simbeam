@@ -9,8 +9,8 @@ import (
 
 	"github.com/chromedp/chromedp"
 
-	"github.com/kei-sidorov/simcast/internal/encoder"
-	"github.com/kei-sidorov/simcast/internal/server"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/server"
 )
 
 // TestLiveInputReachesPage attaches to the real tic-tac-toe demo page and

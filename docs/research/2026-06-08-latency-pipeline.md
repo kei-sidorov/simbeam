@@ -6,7 +6,7 @@
 
 ## Конфигурация на момент замера
 
-- Локальный прогон: `make run-remote BROKER=ws://localhost:9000/ws` (демон) + `go run ./cmd/simcast-signal` (брокер на :9000) + браузерный debug-клиент `http://localhost:8080/`, путь RTC (WebRTC).
+- Локальный прогон: `make run-remote BROKER=ws://localhost:9000/ws` (демон) + `go run ./cmd/simbeam-signal` (брокер на :9000) + браузерный debug-клиент `http://localhost:8080/`, путь RTC (WebRTC).
 - Симулятор: iPhone 17 Pro (iOS 26.1), `rtcFPS = 15` (`internal/server/rtc.go`), интервал поллинга 66.67 мс.
 - Пайплайн: idb `screenshot` (PNG, поллинг в `ScreenshotStream`) → ffmpeg `h264_videotoolbox` → NAL/AU сборка → pion `TrackLocalStaticSample` → браузерный `<video>`.
 - Аргументы ffmpeg (`internal/encoder/ffmpeg.go`): `-fflags nobuffer -flags low_delay -analyzeduration 0 -f image2pipe -vcodec png -framerate 15 -i pipe:0 -an -vf scale=iw/2:ih/2 -c:v h264_videotoolbox -realtime 1 -profile:v baseline -g 30 -b:v 8M -pix_fmt yuv420p -flush_packets 1 -max_delay 0 -f h264 pipe:1`. (`-flags low_delay` здесь стоит **до `-i`**, т.е. на декодере входа.)

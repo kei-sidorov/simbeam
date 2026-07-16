@@ -1,4 +1,4 @@
-// Package server drives the simcast daemon's authenticated WebRTC rendezvous
+// Package server drives the simbeam daemon's authenticated WebRTC rendezvous
 // (via the signaling broker): it streams H.264 and carries control (list/boot/
 // attach/detach + input) over a DataChannel, all behind an Ed25519 pairing gate.
 // The only HTTP surface is the optional static debug client (--web); there is no

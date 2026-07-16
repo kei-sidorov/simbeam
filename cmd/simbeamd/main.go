@@ -1,4 +1,4 @@
-// Command simcastd is the simcast daemon. Subcommands:
+// Command simbeamd is the simbeam daemon. Subcommands:
 //   - list: print the real simulators on this machine (Phase 0 bootstrap).
 //   - serve: run the REST API + WebSocket stream server (Phase 1); with --signal,
 //     persistent remote rendezvous with P-keypress pairing (Phase 3C).
@@ -23,11 +23,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/backend/browser"
-	"github.com/kei-sidorov/simcast/internal/backend/sim"
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/server"
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/backend/browser"
+	"github.com/kei-sidorov/simbeam/internal/backend/sim"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/server"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 	"github.com/mdp/qrterminal/v3"
 	"golang.org/x/term"
 )
@@ -37,7 +37,7 @@ var version = "dev"
 
 // defaultSignalURL is the broker WS URL baked in at build time via -ldflags (see
 // .goreleaser.yaml / the Makefile `run-remote` target) so a distributed binary
-// runs `simcastd serve` with no flags. Empty in the open-core repo → the unbaked
+// runs `simbeamd serve` with no flags. Empty in the open-core repo → the unbaked
 // build stays local-only. Pairing carries everything else in the URL itself, so
 // nothing server-side is needed beyond this broker.
 var defaultSignalURL = ""
@@ -82,15 +82,15 @@ func main() {
 }
 
 func usage(w *os.File) {
-	fmt.Fprintln(w, "simcastd — simcast daemon")
+	fmt.Fprintln(w, "simbeamd — simbeam daemon")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  simcastd list    List available iOS simulators via idb_companion")
-	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
-	fmt.Fprintln(w, "  simcastd demo    Serve a headless-browser demo device instead of a simulator (flags: --signal, --url, --chrome, --pair-secret, ...)")
-	fmt.Fprintln(w, "  simcastd unpair  Revoke a paired client: simcastd unpair <clientPubKey>")
-	fmt.Fprintln(w, "  simcastd version Print the version")
-	fmt.Fprintln(w, "  simcastd help    Show this help")
+	fmt.Fprintln(w, "  simbeamd list    List available iOS simulators via idb_companion")
+	fmt.Fprintln(w, "  simbeamd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
+	fmt.Fprintln(w, "  simbeamd demo    Serve a headless-browser demo device instead of a simulator (flags: --signal, --url, --chrome, --pair-secret, ...)")
+	fmt.Fprintln(w, "  simbeamd unpair  Revoke a paired client: simbeamd unpair <clientPubKey>")
+	fmt.Fprintln(w, "  simbeamd version Print the version")
+	fmt.Fprintln(w, "  simbeamd help    Show this help")
 }
 
 // macHostInfo returns the Mac's display name (scutil ComputerName) and macOS
@@ -111,13 +111,13 @@ func macHostInfo() (name, osVersion string) {
 	return run("scutil", "--get", "ComputerName"), run("sw_vers", "-productVersion")
 }
 
-// defaultStatePath returns ~/.simcast/<name>, falling back to ./.simcast/<name>.
+// defaultStatePath returns ~/.simbeam/<name>, falling back to ./.simbeam/<name>.
 func defaultStatePath(name string) string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".simcast", name)
+		return filepath.Join(".simbeam", name)
 	}
-	return filepath.Join(home, ".simcast", name)
+	return filepath.Join(home, ".simbeam", name)
 }
 
 func runServe(argv []string) error {
@@ -144,7 +144,7 @@ func runServe(argv []string) error {
 		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir, *identityPath, *clientsPath, *pairTTL)
 	}
 
-	fmt.Printf("simcastd serving on %s (idb_companion: %s)\n", *addr, path)
+	fmt.Printf("simbeamd serving on %s (idb_companion: %s)\n", *addr, path)
 	if *webDir != "" {
 		fmt.Printf("debug client: http://localhost%s/\n", *addr)
 	}
@@ -164,7 +164,7 @@ func runDemo(argv []string) error {
 	demoURL := fs.String("url", "", "page the demo device renders (required)")
 	chrome := fs.String("chrome", "", "path to the Chromium/Chrome binary; empty = auto-detect")
 	noSandbox := fs.Bool("chrome-no-sandbox", false, "pass --no-sandbox to Chromium (needed only when running as root)")
-	name := fs.String("name", "simcast demo", "device/host name shown in the client")
+	name := fs.String("name", "simbeam demo", "device/host name shown in the client")
 	addr := fs.String("addr", ":8080", "listen address for the local debug client (only with --web)")
 	webDir := fs.String("web", "", "directory with the browser debug client (served at /); empty = none")
 	clientURL := fs.String("client-url", "", "base URL of the client for the pairing link; empty = http://localhost<addr>/")
@@ -235,7 +235,7 @@ func runDemo(argv []string) error {
 	}
 
 	pairURL := signal.PairingURL(base, *signalURL, id.PubB64, secret)
-	fmt.Printf("simcastd demo mode — broker: %s\n", *signalURL)
+	fmt.Printf("simbeamd demo mode — broker: %s\n", *signalURL)
 	fmt.Printf("daemonID: %s\n", id.PubB64)
 	fmt.Printf("demo page: %s\n", *demoURL)
 	fmt.Printf("\nPairing URL (multi-use, survives restarts only with a fixed --pair-secret):\n\n  %s\n\n", pairURL)
@@ -280,7 +280,7 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	fmt.Printf("simcastd remote mode — broker: %s\n", signalURL)
+	fmt.Printf("simbeamd remote mode — broker: %s\n", signalURL)
 	fmt.Printf("daemonID: %s\n", id.PubB64)
 	fmt.Println("Press P to pair a new device, C to cancel an open window, Q to quit.")
 
@@ -473,7 +473,7 @@ func runUnpair(argv []string) error {
 	clientsPath := fs.String("clients", defaultStatePath("clients.json"), "path to the pinned-clients store")
 	_ = fs.Parse(argv)
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: simcastd unpair [--clients path] <clientPubKey>")
+		return fmt.Errorf("usage: simbeamd unpair [--clients path] <clientPubKey>")
 	}
 	pinned, err := server.LoadPinnedStore(*clientsPath)
 	if err != nil {

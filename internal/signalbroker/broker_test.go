@@ -9,8 +9,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 func wsURL(t *testing.T, srv *httptest.Server) string {

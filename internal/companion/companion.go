@@ -1,4 +1,4 @@
-// Package companion drives the iOS Simulator lifecycle for simcast.
+// Package companion drives the iOS Simulator lifecycle for simbeam.
 //
 // Simulator enumeration and boot use Apple's own `xcrun simctl` — there is no
 // reason to route those through a third-party binary. idb_companion (Meta's idb,

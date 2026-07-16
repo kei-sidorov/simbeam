@@ -1,5 +1,5 @@
-// Package signal holds the simcast signaling wire types and the crypto
-// primitives shared by the signaling broker (cmd/simcast-signal) and the
+// Package signal holds the simbeam signaling wire types and the crypto
+// primitives shared by the signaling broker (cmd/simbeam-signal) and the
 // daemon (internal/server). It imports neither webrtc nor the broker so both
 // sides depend on the same definitions without a dependency cycle.
 package signal

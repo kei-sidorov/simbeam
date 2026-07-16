@@ -1,4 +1,4 @@
-// Command simcast-signal is the reference simcast signaling broker: a thin WSS
+// Command simbeam-signal is the reference simbeam signaling broker: a thin WSS
 // rendezvous that keeps a daemon present by daemonID, relays the mutual
 // challenge-response + one offer→answer, issues iceServers (STUN always; TURN
 // only when the client's subscription is active), and serves the subscription
@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signalbroker"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signalbroker"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 // version is set at release time via -ldflags "-X main.version=...". "dev" otherwise.
@@ -28,7 +28,7 @@ func main() {
 	turn := flag.String("turn", "", "comma-separated TURN URLs (handed only to active subscribers)")
 	turnSecret := flag.String("turn-secret", "", "coturn static-auth-secret for ephemeral credentials")
 	turnTTL := flag.Duration("turn-ttl", time.Minute, "ephemeral TURN credential lifetime")
-	db := flag.String("db", "simcast.db", "SQLite path for the subscriptions store")
+	db := flag.String("db", "simbeam.db", "SQLite path for the subscriptions store")
 	flag.Parse()
 
 	if *versionFlag {
@@ -57,7 +57,7 @@ func main() {
 		AppSecret:  appSecret,
 	})
 
-	fmt.Printf("simcast-signal listening on %s (ws: /ws, api: /v1/subscription, db: %s)\n", *addr, *db)
+	fmt.Printf("simbeam-signal listening on %s (ws: /ws, api: /v1/subscription, db: %s)\n", *addr, *db)
 	if err := http.ListenAndServe(*addr, b.Handler()); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

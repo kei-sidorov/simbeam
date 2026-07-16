@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // pairResult is the outcome of a pairing-window verify. It lets the daemon send

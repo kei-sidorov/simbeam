@@ -1,0 +1,8 @@
+[Unit]
+Description=simbeam-signal auto-update (pull latest GitHub release)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/simbeam-signal-update.sh

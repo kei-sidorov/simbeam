@@ -7,10 +7,10 @@
 /dist/
 
 # Locally-built command binaries (go build ./...)
-/simcastd
-/simcast-signal
+/simbeamd
+/simbeam-signal
 # default SQLite store path
-/simcast.db
+/simbeam.db
 
 # macOS
 .DS_Store

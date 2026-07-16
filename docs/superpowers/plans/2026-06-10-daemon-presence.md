@@ -123,7 +123,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 func watch(t *testing.T, c *websocket.Conn, ids ...string) {
@@ -228,7 +228,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // Keepalive tuning. A clean daemon exit (Ctrl-C, brew stop, crash) closes the WS
@@ -563,7 +563,7 @@ to:
 In `web/debug/index.html`, in `saveMac`, change:
 
 ```javascript
-  localStorage.setItem('simcast_macs', JSON.stringify(macs));
+  localStorage.setItem('simbeam_macs', JSON.stringify(macs));
   renderMacs();
 }
 ```
@@ -571,7 +571,7 @@ In `web/debug/index.html`, in `saveMac`, change:
 to:
 
 ```javascript
-  localStorage.setItem('simcast_macs', JSON.stringify(macs));
+  localStorage.setItem('simbeam_macs', JSON.stringify(macs));
   renderMacs();
   subscribePresence(); // re-watch with the updated daemon list
 }
@@ -600,13 +600,13 @@ to:
 
 ```bash
 # Terminal A: broker
-go run ./cmd/simcast-signal   # or the project's run target; note its ws URL
+go run ./cmd/simbeam-signal   # or the project's run target; note its ws URL
 
 # Terminal B: daemon serving the debug page
-go run ./cmd/simcastd serve --web
+go run ./cmd/simbeamd serve --web
 ```
 
-Open `http://localhost:8080/`, pair a Mac (press `P` in `simcastd`, open the URL).
+Open `http://localhost:8080/`, pair a Mac (press `P` in `simbeamd`, open the URL).
 Expected:
 - After pairing, the Mac button shows a 🟢 dot.
 - Stop the daemon (Ctrl-C in Terminal B) → within ~1s the dot turns ⚪ (clean close).

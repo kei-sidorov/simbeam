@@ -251,7 +251,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/companion"
 )
 
 type stubComp struct {
@@ -358,7 +358,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/companion"
 )
 
 // ctrlReply is a downstream control message: daemon → client over the
@@ -514,8 +514,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/encoder"
-	"github.com/kei-sidorov/simcast/internal/idb"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/idb"
 )
 
 // attachment is one live video feed: a spawned idb_companion sidecar whose
@@ -688,7 +688,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/kei-sidorov/simcast/internal/rtc"
+	"github.com/kei-sidorov/simbeam/internal/rtc"
 )
 
 // rtcFPS is the screenshot/encode frame rate for the WebRTC path.
@@ -792,7 +792,7 @@ Write the full file:
 <html>
 <head>
   <meta charset="utf-8">
-  <title>simcast debug</title>
+  <title>simbeam debug</title>
   <style>
     body { font-family: -apple-system, sans-serif; margin: 16px; }
     #sims button { display: block; margin: 4px 0; }
@@ -1093,8 +1093,8 @@ git commit -m "feat(web): RTC control plane — list/boot/attach over DataChanne
 
 - [ ] **Step 1: Build and run the daemon**
 
-Run: `make run` (or `go run ./cmd/simcastd serve --web ./web/debug`)
-Expected: prints `simcastd serving on :8080` and `debug client: http://localhost:8080/`.
+Run: `make run` (or `go run ./cmd/simbeamd serve --web ./web/debug`)
+Expected: prints `simbeamd serving on :8080` and `debug client: http://localhost:8080/`.
 
 - [ ] **Step 2: Verify the control plane in the browser (RTC mode, default)**
 
@@ -1183,4 +1183,4 @@ git commit -m "docs(decisions): #50 — pre-negotiated silent track, control pla
 
 ## Execution Handoff
 
-After this plan, **Plan 3b** (signaling server `cmd/simcast-signal` + daemon outbound dial + STUN/TURN gating + upsell) gets written and executed on top of this foundation.
+After this plan, **Plan 3b** (signaling server `cmd/simbeam-signal` + daemon outbound dial + STUN/TURN gating + upsell) gets written and executed on top of this foundation.

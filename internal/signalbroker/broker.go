@@ -1,4 +1,4 @@
-// Package signalbroker is the simcast signaling broker: a thin WSS rendezvous.
+// Package signalbroker is the simbeam signaling broker: a thin WSS rendezvous.
 // A daemon registers persistently under its daemonID (its Ed25519 pubkey) and
 // stays present; a client is routed to it by daemonID. The broker relays a
 // mutual challenge-response (it authenticates only the client KEY, for the TURN
@@ -18,8 +18,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 // Config tunes ICE issuance, the subscription gate, and the subscription API.

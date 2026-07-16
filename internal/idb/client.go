@@ -1,6 +1,6 @@
 // Package idb is a gRPC client wrapper around a running idb_companion sidecar
 // (idb_companion --udid X --grpc-port N). It exposes the minimal RPC surface
-// simcast needs: describe, screenshot, hid.
+// simbeam needs: describe, screenshot, hid.
 //
 // Frames come from polling the screenshot RPC, not video_stream: on
 // idb_companion 1.1.8 the MJPEG video stream emits only one frame for a static
@@ -14,7 +14,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/idbpb"
+	"github.com/kei-sidorov/simbeam/internal/idbpb"
 	"google.golang.org/grpc"
 )
 

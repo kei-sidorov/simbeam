@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# First-time VPS setup for the simcast signalling server. Run as root from a checkout
+# First-time VPS setup for the simbeam signalling server. Run as root from a checkout
 # of this repo's deploy/ directory: sudo ./deploy/bootstrap.sh
 #
 # Installs coturn, lays down the systemd units + updater + Caddyfile, creates the
-# simcast user and /etc/simcast/signal.env from the template (if absent), pulls the
-# first simcast-signal binary, and enables the broker + auto-update timer.
+# simbeam user and /etc/simbeam/signal.env from the template (if absent), pulls the
+# first simbeam-signal binary, and enables the broker + auto-update timer.
 # Idempotent: re-running is safe.
 set -euo pipefail
 
@@ -15,37 +15,37 @@ echo "==> installing coturn"
 apt-get update -y
 apt-get install -y coturn curl
 
-echo "==> creating simcast user + state dir"
-id -u simcast >/dev/null 2>&1 || useradd --system --home /var/lib/simcast --shell /usr/sbin/nologin simcast
-install -d -o simcast -g simcast -m 0750 /var/lib/simcast
+echo "==> creating simbeam user + state dir"
+id -u simbeam >/dev/null 2>&1 || useradd --system --home /var/lib/simbeam --shell /usr/sbin/nologin simbeam
+install -d -o simbeam -g simbeam -m 0750 /var/lib/simbeam
 
 echo "==> installing systemd units + updater"
-install -m 0644 "${here}/systemd/simcast-signal.service" /etc/systemd/system/
-install -m 0644 "${here}/systemd/simcast-signal-update.service" /etc/systemd/system/
-install -m 0644 "${here}/systemd/simcast-signal-update.timer" /etc/systemd/system/
-install -m 0755 "${here}/simcast-signal-update.sh" /usr/local/bin/simcast-signal-update.sh
+install -m 0644 "${here}/systemd/simbeam-signal.service" /etc/systemd/system/
+install -m 0644 "${here}/systemd/simbeam-signal-update.service" /etc/systemd/system/
+install -m 0644 "${here}/systemd/simbeam-signal-update.timer" /etc/systemd/system/
+install -m 0755 "${here}/simbeam-signal-update.sh" /usr/local/bin/simbeam-signal-update.sh
 
 echo "==> env file"
-install -d -m 0750 /etc/simcast
-if [ ! -f /etc/simcast/signal.env ]; then
-  install -m 0600 "${here}/signal.env.example" /etc/simcast/signal.env
-  echo "    created /etc/simcast/signal.env from template — EDIT IT before the service is useful"
+install -d -m 0750 /etc/simbeam
+if [ ! -f /etc/simbeam/signal.env ]; then
+  install -m 0600 "${here}/signal.env.example" /etc/simbeam/signal.env
+  echo "    created /etc/simbeam/signal.env from template — EDIT IT before the service is useful"
 fi
 
 echo "==> first binary pull"
-/usr/local/bin/simcast-signal-update.sh || echo "    (no release yet? re-run after the first GitHub release)"
+/usr/local/bin/simbeam-signal-update.sh || echo "    (no release yet? re-run after the first GitHub release)"
 
 echo "==> enabling services"
 systemctl daemon-reload
-systemctl enable --now simcast-signal.service || echo "    broker failed to start — likely needs /etc/simcast/signal.env edited"
-systemctl enable --now simcast-signal-update.timer
+systemctl enable --now simbeam-signal.service || echo "    broker failed to start — likely needs /etc/simbeam/signal.env edited"
+systemctl enable --now simbeam-signal-update.timer
 
 cat <<'NOTE'
 
 Next steps (manual):
-  1. Edit /etc/simcast/signal.env (app secret, domain, --turn-secret).
+  1. Edit /etc/simbeam/signal.env (app secret, domain, --turn-secret).
   2. Set coturn static-auth-secret == --turn-secret in /etc/turnserver.conf, set
      external-ip and realm, then: systemctl enable --now coturn
   3. Install Caddy and point deploy/Caddyfile at your domain, then reload Caddy.
-  4. systemctl restart simcast-signal
+  4. systemctl restart simbeam-signal
 NOTE

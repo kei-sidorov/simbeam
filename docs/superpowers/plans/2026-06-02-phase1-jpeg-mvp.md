@@ -4,7 +4,7 @@
 
 **Goal:** На debug-клиенте в браузере видно живой экран iOS-симулятора (JPEG-кадры по WebSocket), клик попадает как тап; клиент умеет список симуляторов и boot.
 
-**Architecture:** `simcastd serve` поднимает HTTP-сервер. REST `GET /api/simulators` и `POST /api/boot` управляют lifecycle через CLI `idb_companion` (пакет `companion`). На `WS /session?udid=X` сервер спавнит сайдкар `idb_companion --udid X --grpc-port N`, по gRPC зовёт `describe` (размеры), `video_stream(MJPEG)` (кадры → WS binary) и `hid` (тапы из WS). Один WS = одна сессия со своим сайдкаром; teardown убивает сайдкар.
+**Architecture:** `simbeamd serve` поднимает HTTP-сервер. REST `GET /api/simulators` и `POST /api/boot` управляют lifecycle через CLI `idb_companion` (пакет `companion`). На `WS /session?udid=X` сервер спавнит сайдкар `idb_companion --udid X --grpc-port N`, по gRPC зовёт `describe` (размеры), `video_stream(MJPEG)` (кадры → WS binary) и `hid` (тапы из WS). Один WS = одна сессия со своим сайдкаром; teardown убивает сайдкар.
 
 **Tech Stack:** Go 1.26, `google.golang.org/grpc` + `google.golang.org/protobuf` (стабы из `idb.proto`), `github.com/gorilla/websocket`, vanilla HTML/JS debug-клиент, Makefile, protoc 33.4.
 
@@ -32,7 +32,7 @@
 | `internal/server/server_test.go` | httptest для REST с фейками | Create |
 | `internal/server/session.go` | WS-сессия: сайдкар + кадры↓ + ввод↑ + teardown | Create |
 | `web/debug/index.html` | Debug-клиент (список/boot/кадр/тап/Home) | Create |
-| `cmd/simcastd/main.go` | +подкоманда `serve [--addr] [--web]` | Modify |
+| `cmd/simbeamd/main.go` | +подкоманда `serve [--addr] [--web]` | Modify |
 | `Makefile` | `proto`/`build`/`run`/`test` | Create |
 | `README.md` | Инструкция `serve` | Modify |
 
@@ -74,7 +74,7 @@ cp ~/Developer/ios-bridge/.venv/proto/idb.proto proto/idb.proto
 В `proto/idb.proto` сразу после строки `package idb;` добавить:
 
 ```proto
-option go_package = "github.com/kei-sidorov/simcast/internal/idbpb;idbpb";
+option go_package = "github.com/kei-sidorov/simbeam/internal/idbpb;idbpb";
 ```
 
 - [ ] **Step 2: Установить protoc-плагины и gRPC-зависимости**
@@ -100,15 +100,15 @@ export PATH := $(GOBIN):$(PATH)
 proto:
 	mkdir -p internal/idbpb
 	protoc \
-		--go_out=. --go_opt=module=github.com/kei-sidorov/simcast \
-		--go-grpc_out=. --go-grpc_opt=module=github.com/kei-sidorov/simcast \
+		--go_out=. --go_opt=module=github.com/kei-sidorov/simbeam \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/kei-sidorov/simbeam \
 		proto/idb.proto
 
 build:
 	go build ./...
 
 run:
-	go run ./cmd/simcastd serve --web ./web/debug
+	go run ./cmd/simbeamd serve --web ./web/debug
 
 test:
 	go test ./...
@@ -299,14 +299,14 @@ Expected: PASS.
 ```go
 // Package idb is a gRPC client wrapper around a running idb_companion sidecar
 // (idb_companion --udid X --grpc-port N). It exposes the minimal RPC surface
-// simcast needs: describe, video_stream (MJPEG), hid.
+// simbeam needs: describe, video_stream (MJPEG), hid.
 package idb
 
 import (
 	"context"
 	"fmt"
 
-	"github.com/kei-sidorov/simcast/internal/idbpb"
+	"github.com/kei-sidorov/simbeam/internal/idbpb"
 	"google.golang.org/grpc"
 )
 
@@ -781,7 +781,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/companion"
 )
 
 type fakeCompanion struct {
@@ -850,7 +850,7 @@ Expected: FAIL — `New`/`Handler` не объявлены.
 `internal/server/server.go`:
 
 ```go
-// Package server exposes the simcast daemon HTTP API: REST list/boot plus a
+// Package server exposes the simbeam daemon HTTP API: REST list/boot plus a
 // per-session WebSocket that streams JPEG frames and accepts taps.
 package server
 
@@ -859,7 +859,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/companion"
 )
 
 // Companion is the lifecycle surface the server needs (satisfied by *companion.Client).
@@ -1064,7 +1064,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/websocket"
-	"github.com/kei-sidorov/simcast/internal/idb"
+	"github.com/kei-sidorov/simbeam/internal/idb"
 )
 
 var upgrader = websocket.Upgrader{
@@ -1173,14 +1173,14 @@ git commit -m "feat(phase1): WS session — MJPEG frames down, tap/home up"
 
 ---
 
-## Task 8: serve subcommand in cmd/simcastd
+## Task 8: serve subcommand in cmd/simbeamd
 
 **Files:**
-- Modify: `cmd/simcastd/main.go`
+- Modify: `cmd/simbeamd/main.go`
 
 - [ ] **Step 1: Добавить serve в main.go**
 
-В `cmd/simcastd/main.go` добавить ветку в `switch` и функцию `runServe`. Импорты: добавить `flag`, `net/http`, `github.com/kei-sidorov/simcast/internal/server`.
+В `cmd/simbeamd/main.go` добавить ветку в `switch` и функцию `runServe`. Импорты: добавить `flag`, `net/http`, `github.com/kei-sidorov/simbeam/internal/server`.
 
 ```go
 case "serve":
@@ -1204,7 +1204,7 @@ func runServe(argv []string) error {
 	}
 	srv := server.New(c, *webDir).WithBinary(path)
 
-	fmt.Printf("simcastd serving on %s (idb_companion: %s)\n", *addr, path)
+	fmt.Printf("simbeamd serving on %s (idb_companion: %s)\n", *addr, path)
 	if *webDir != "" {
 		fmt.Printf("debug client: http://localhost%s/\n", *addr)
 	}
@@ -1215,19 +1215,19 @@ func runServe(argv []string) error {
 Обновить `usage`, добавив строку:
 
 ```go
-fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web)")
+fmt.Fprintln(w, "  simbeamd serve   Serve REST API + WebSocket stream (flags: --addr, --web)")
 ```
 
 - [ ] **Step 2: Проверить сборку и запуск помощи**
 
-Run: `go build ./... && go run ./cmd/simcastd serve --help`
+Run: `go build ./... && go run ./cmd/simbeamd serve --help`
 Expected: сборка ОК; печатается usage флагов serve и выход.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/simcastd/main.go
-git commit -m "feat(phase1): simcastd serve subcommand"
+git add cmd/simbeamd/main.go
+git commit -m "feat(phase1): simbeamd serve subcommand"
 ```
 
 ---
@@ -1246,7 +1246,7 @@ git commit -m "feat(phase1): simcastd serve subcommand"
 <html>
 <head>
   <meta charset="utf-8">
-  <title>simcast debug</title>
+  <title>simbeam debug</title>
   <style>
     body { font-family: -apple-system, sans-serif; margin: 16px; }
     #sims button { display: block; margin: 4px 0; }
@@ -1326,8 +1326,8 @@ loadSims();
 
 - [ ] **Step 2: Проверить, что сервер отдаёт страницу**
 
-Run: `go run ./cmd/simcastd serve --web ./web/debug &` затем `curl -s localhost:8080/ | grep -o '<title>simcast debug</title>'` ; затем убить процесс.
-Expected: выводит `<title>simcast debug</title>`.
+Run: `go run ./cmd/simbeamd serve --web ./web/debug &` затем `curl -s localhost:8080/ | grep -o '<title>simbeam debug</title>'` ; затем убить процесс.
+Expected: выводит `<title>simbeam debug</title>`.
 
 - [ ] **Step 3: Commit**
 
@@ -1351,7 +1351,7 @@ Expected: всё зелёное.
 - [ ] **Step 2: Ручная проверка DoD (нужен реальный сим)**
 
 ```bash
-go run ./cmd/simcastd serve --web ./web/debug
+go run ./cmd/simbeamd serve --web ./web/debug
 ```
 Открыть `http://localhost:8080/`, выбрать симулятор (если не booted — кнопка забутит), дождаться кадров.
 
@@ -1372,7 +1372,7 @@ Expected:
 ## Запуск стрима (Phase 1)
 
 ```bash
-go run ./cmd/simcastd serve --web ./web/debug
+go run ./cmd/simbeamd serve --web ./web/debug
 ```
 
 Открой `http://localhost:8080/`, выбери симулятор (кнопка забутит, если он не запущен),

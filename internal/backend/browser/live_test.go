@@ -7,8 +7,8 @@ import (
 
 	"github.com/chromedp/chromedp"
 
-	"github.com/kei-sidorov/simcast/internal/encoder"
-	"github.com/kei-sidorov/simcast/internal/server"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/server"
 )
 
 // chromeAvailable reports whether chromedp can find a Chrome/Chromium binary,
@@ -40,7 +40,7 @@ func TestLiveAttachStreamsFrames(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b := New(Options{URL: "data:text/html,<body style='background:%23346'><h1>simcast demo</h1></body>"})
+	b := New(Options{URL: "data:text/html,<body style='background:%23346'><h1>simbeam demo</h1></body>"})
 	feed, err := b.Attach(ctx, UDID, server.QualityOpts{})
 	if err != nil {
 		t.Fatalf("Attach: %v", err)

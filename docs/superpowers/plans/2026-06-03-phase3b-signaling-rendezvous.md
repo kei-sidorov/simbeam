@@ -4,7 +4,7 @@
 
 **Goal:** Let a browser reach the daemon's simulator from anywhere by pairing through a thin Go WSS signaling broker (rooms keyed by `pairingToken`), with STUN open to all and TURN gated to "subscribers" via ephemeral HMAC credentials — reusing the unchanged 3a `rtc.Session` / `rtcDispatch` session mechanics.
 
-**Architecture:** A new `cmd/simcast-signal` broker relays one offer→answer between a daemon and a browser that share a `pairingToken`, and hands each peer an `iceServers` config (STUN always; TURN only when the subscription stub grants it). The daemon stops *accepting* WebRTC and starts *dialing out*: it registers a room on the broker, waits for the client's offer, answers it (reusing the 3a control-plane peer), and signs the answer with a per-session Ed25519 key so the browser can authenticate it (anti-MITM). **The signaling socket is handshake-only** — it carries exactly one offer/answer and then closes; the P2P connection (video track + control DataChannel) carries everything else, and disconnect detection stays on pion's `OnConnectionStateChange` (decision #39, #50). No SDP ever returns to signaling after pairing; `attach`/`detach` remain renegotiation-free (Option B, decision #50).
+**Architecture:** A new `cmd/simbeam-signal` broker relays one offer→answer between a daemon and a browser that share a `pairingToken`, and hands each peer an `iceServers` config (STUN always; TURN only when the subscription stub grants it). The daemon stops *accepting* WebRTC and starts *dialing out*: it registers a room on the broker, waits for the client's offer, answers it (reusing the 3a control-plane peer), and signs the answer with a per-session Ed25519 key so the browser can authenticate it (anti-MITM). **The signaling socket is handshake-only** — it carries exactly one offer/answer and then closes; the P2P connection (video track + control DataChannel) carries everything else, and disconnect detection stays on pion's `OnConnectionStateChange` (decision #39, #50). No SDP ever returns to signaling after pairing; `attach`/`detach` remain renegotiation-free (Option B, decision #50).
 
 **Tech Stack:** Go 1.25, `gorilla/websocket` (broker server + daemon outbound dial — already the repo's WS lib, reused instead of pulling in `coder/websocket`), `crypto/ed25519` + `crypto/hmac`/`crypto/sha1` (stdlib), pion/webrtc v4 (existing `internal/rtc`), `coturn` (off-the-shelf, config-only — not built here), vanilla-JS debug client with WebCrypto Ed25519 verification.
 
@@ -35,17 +35,17 @@
 | `internal/signal/pairing_test.go` | Token + pairing-URL unit tests. | **Create** |
 | `internal/signalbroker/broker.go` | The WSS broker: rooms by token, register/join, relay offer→answer, issue `iceServers` with subscription-gated TURN. | **Create** |
 | `internal/signalbroker/broker_test.go` | Integration tests via `httptest` + two real WS clients. | **Create** |
-| `cmd/simcast-signal/main.go` | Thin entrypoint: flags (`--addr`, `--stun`, `--turn`, `--turn-secret`, `--grant-turn`), starts the broker. | **Create** |
+| `cmd/simbeam-signal/main.go` | Thin entrypoint: flags (`--addr`, `--stun`, `--turn`, `--turn-secret`, `--grant-turn`), starts the broker. | **Create** |
 | `internal/rtc/peer.go` | Accept `iceServers` so the peer can gather srflx/relay candidates. | Modify: `New` signature |
 | `internal/rtc/peer_test.go` | Fix `New` callers; add an iceServers-plumbing test. | Modify |
 | `internal/server/rtc.go` | Extract `startSession` helper (shared peer+dispatch wiring); local `/rtc` reuses it with `nil` iceServers. | Modify |
 | `internal/server/remote.go` | Daemon outbound dial: register room, relay one offer→signed answer, reuse `startSession`. | **Create** |
 | `internal/server/remote_test.go` | Unit test for the answer-signing envelope + iceServers conversion (no live broker). | **Create** |
-| `cmd/simcastd/main.go` | `serve --signal/--client-url`: generate keypair+token, dial broker, print pairing URL. | Modify |
+| `cmd/simbeamd/main.go` | `serve --signal/--client-url`: generate keypair+token, dial broker, print pairing URL. | Modify |
 | `web/debug/index.html` | Remote pairing mode from URL fragment: join broker, verify signed answer, use `iceServers`, upsell on `failed`. | Modify |
 | `deploy/coturn/turnserver.conf` | Reference `coturn` config (REST-API/long-term creds). Deploy-only. | **Create** |
 | `deploy/README.md` | How to deploy broker + coturn; what each `iceServers` entry means. | **Create** |
-| `README.md` | Document remote pairing + `simcast-signal`. | Modify |
+| `README.md` | Document remote pairing + `simbeam-signal`. | Modify |
 | `docs/decisions.md` | Record 3b decisions (#51–#54). | Modify |
 
 **Boundary preserved (decision #30):** `internal/signal` is pure data + crypto and imports **neither** webrtc nor the broker. The broker imports only `internal/signal`. The daemon (`internal/server`) imports `internal/signal` and converts `signal.ICEServer` → `webrtc.ICEServer` locally. `rtcDispatch`/`applyControl` are untouched — 3b changes only *how peers find each other*, never the session mechanics.
@@ -117,8 +117,8 @@ Expected: FAIL — package/`MakeTURNCredential` undefined (compile error).
 Create `internal/signal/message.go`:
 
 ```go
-// Package signal holds the simcast signaling wire types and the crypto
-// primitives shared by the signaling broker (cmd/simcast-signal) and the
+// Package signal holds the simbeam signaling wire types and the crypto
+// primitives shared by the signaling broker (cmd/simbeam-signal) and the
 // daemon (internal/server). It imports neither webrtc nor the broker so both
 // sides depend on the same definitions without a dependency cycle.
 package signal
@@ -451,7 +451,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // dial connects a WS client to the broker's /ws endpoint.
@@ -591,7 +591,7 @@ Expected: FAIL — `New`/`Config`/`Handler` undefined.
 Create `internal/signalbroker/broker.go`:
 
 ```go
-// Package signalbroker is the simcast signaling broker: a thin WSS rendezvous
+// Package signalbroker is the simbeam signaling broker: a thin WSS rendezvous
 // that pairs a daemon and a browser sharing a one-time pairing token, relays a
 // single offer→answer between them, and hands each peer an iceServers config
 // (STUN always; TURN only when the subscription stub grants it). Media never
@@ -604,7 +604,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // Config tunes ICE issuance and subscription gating.
@@ -824,17 +824,17 @@ git commit -m "feat(signalbroker): WSS room broker — relay offer/answer, gated
 
 ---
 
-## Task 4: `cmd/simcast-signal` — broker entrypoint
+## Task 4: `cmd/simbeam-signal` — broker entrypoint
 
 **Files:**
-- Create: `cmd/simcast-signal/main.go`
+- Create: `cmd/simbeam-signal/main.go`
 
 - [ ] **Step 1: Write the entrypoint**
 
-Create `cmd/simcast-signal/main.go`:
+Create `cmd/simbeam-signal/main.go`:
 
 ```go
-// Command simcast-signal is the reference simcast signaling broker: a thin WSS
+// Command simbeam-signal is the reference simbeam signaling broker: a thin WSS
 // rendezvous that pairs a daemon and a browser by pairing token, relays one
 // offer→answer, and issues iceServers (STUN always; TURN only when granted).
 // Media never transits it. The managed/production broker is the open-core moat
@@ -849,7 +849,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signalbroker"
+	"github.com/kei-sidorov/simbeam/internal/signalbroker"
 )
 
 func main() {
@@ -869,7 +869,7 @@ func main() {
 		GrantTURN:  func(string) bool { return *grantTURN },
 	})
 
-	fmt.Printf("simcast-signal listening on %s (ws path: /ws)\n", *addr)
+	fmt.Printf("simbeam-signal listening on %s (ws path: /ws)\n", *addr)
 	if *grantTURN {
 		fmt.Println("WARNING: --grant-turn is a STUB that grants TURN to every room (dev/testing only)")
 	}
@@ -892,19 +892,19 @@ func splitNonEmpty(csv string) []string {
 
 - [ ] **Step 2: Verify it builds**
 
-Run: `go build ./cmd/simcast-signal/`
+Run: `go build ./cmd/simbeam-signal/`
 Expected: no output (success).
 
 - [ ] **Step 3: Smoke-run it (manual)**
 
-Run: `go run ./cmd/simcast-signal --addr :9000`
-Expected: prints `simcast-signal listening on :9000 (ws path: /ws)`. Stop it with Ctrl-C.
+Run: `go run ./cmd/simbeam-signal --addr :9000`
+Expected: prints `simbeam-signal listening on :9000 (ws path: /ws)`. Stop it with Ctrl-C.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/simcast-signal/main.go
-git commit -m "feat(cmd): simcast-signal broker entrypoint"
+git add cmd/simbeam-signal/main.go
+git commit -m "feat(cmd): simbeam-signal broker entrypoint"
 ```
 
 ---
@@ -980,7 +980,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/kei-sidorov/simcast/internal/rtc"
+	"github.com/kei-sidorov/simbeam/internal/rtc"
 )
 
 // rtcFPS is the screenshot/encode frame rate for the WebRTC path.
@@ -1078,7 +1078,7 @@ git commit -m "feat(rtc): iceServers config + shared startSession wiring"
 **Files:**
 - Create: `internal/server/remote.go`
 - Test: `internal/server/remote_test.go`
-- Modify: `cmd/simcastd/main.go`
+- Modify: `cmd/simbeamd/main.go`
 
 The daemon dials the broker, registers a room under the pairing token (announcing its public key), waits for the client's offer, answers it with the reused control-plane peer, and **signs the answer SDP** so the browser can authenticate the daemon (anti-MITM). After the answer is sent the handshake is done: the daemon keeps the live P2P peer and closes the signaling socket. The live `idb`/`ffmpeg` attach path is exercised in Task 9; this task unit-tests the signing/conversion seams that don't need a live handshake.
 
@@ -1092,7 +1092,7 @@ package server
 import (
 	"testing"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 func TestToWebRTCConvertsICEServers(t *testing.T) {
@@ -1149,7 +1149,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // toWebRTC converts broker iceServers to pion's type (kept here so
@@ -1277,7 +1277,7 @@ Expected: PASS (server seam tests + updated broker integration tests).
 
 - [ ] **Step 5: Wire `serve --signal` into the daemon**
 
-In `cmd/simcastd/main.go`, extend `runServe`. Add imports `context`, `log`, and the `signal` package, then replace `runServe` with:
+In `cmd/simbeamd/main.go`, extend `runServe`. Add imports `context`, `log`, and the `signal` package, then replace `runServe` with:
 
 ```go
 func runServe(argv []string) error {
@@ -1300,7 +1300,7 @@ func runServe(argv []string) error {
 		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir)
 	}
 
-	fmt.Printf("simcastd serving on %s (idb_companion: %s)\n", *addr, path)
+	fmt.Printf("simbeamd serving on %s (idb_companion: %s)\n", *addr, path)
 	if *webDir != "" {
 		fmt.Printf("debug client: http://localhost%s/\n", *addr)
 	}
@@ -1335,7 +1335,7 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir string) er
 		}()
 	}
 
-	fmt.Printf("simcastd remote mode — broker: %s\n", signalURL)
+	fmt.Printf("simbeamd remote mode — broker: %s\n", signalURL)
 	fmt.Println("Pair this device by opening:")
 	fmt.Println("  " + signal.PairingURL(base, signalURL, token, pubKey))
 	fmt.Println("(token is one-time; restart to pair again)")
@@ -1348,7 +1348,7 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir string) er
 Also update `usage()` to mention the flags:
 
 ```go
-	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url)")
+	fmt.Fprintln(w, "  simbeamd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url)")
 ```
 
 - [ ] **Step 6: Build and vet**
@@ -1359,7 +1359,7 @@ Expected: no output.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add internal/server/remote.go internal/server/remote_test.go internal/signalbroker/broker.go internal/signalbroker/broker_test.go cmd/simcastd/main.go
+git add internal/server/remote.go internal/server/remote_test.go internal/signalbroker/broker.go internal/signalbroker/broker_test.go cmd/simbeamd/main.go
 git commit -m "feat(server): outbound signaling dial — register room, sign + relay answer"
 ```
 
@@ -1537,7 +1537,7 @@ This task produces deployment artifacts. Per the spec, the TURN engine is off-th
 Create `deploy/coturn/turnserver.conf`:
 
 ```ini
-# simcast reference coturn config (deploy-only — NOT exercised by local tests).
+# simbeam reference coturn config (deploy-only — NOT exercised by local tests).
 #
 # coturn validates the ephemeral credentials the broker issues
 # (internal/signal.MakeTURNCredential) by recomputing the same HMAC with the
@@ -1553,7 +1553,7 @@ external-ip=YOUR.PUBLIC.IP
 use-auth-secret
 static-auth-secret=REPLACE_WITH_SAME_SECRET_AS_BROKER_--turn-secret
 
-realm=simcast
+realm=simbeam
 
 # Relay only what we need; lock down the rest.
 no-multicast-peers
@@ -1574,7 +1574,7 @@ fingerprint
 Create `deploy/README.md`:
 
 ```markdown
-# Deploying simcast remote access (Phase 3b)
+# Deploying simbeam remote access (Phase 3b)
 
 > **Deploy-only.** None of this is exercised by the repo's local tests. Local
 > validation (see the plan's Task 9) proves the *functional* pairing flow over
@@ -1583,15 +1583,15 @@ Create `deploy/README.md`:
 
 ## Components
 
-1. **Signaling broker** — `cmd/simcast-signal`. Stateless WSS rendezvous.
+1. **Signaling broker** — `cmd/simbeam-signal`. Stateless WSS rendezvous.
 2. **coturn** — off-the-shelf TURN relay. We only configure it (`coturn/turnserver.conf`).
-3. **Daemon** — `simcastd serve --signal wss://<broker-host>/ws --web ./web/debug`.
+3. **Daemon** — `simbeamd serve --signal wss://<broker-host>/ws --web ./web/debug`.
 
 ## Broker
 
 ```bash
-go build -o simcast-signal ./cmd/simcast-signal
-./simcast-signal \
+go build -o simbeam-signal ./cmd/simbeam-signal
+./simbeam-signal \
   --addr :9000 \
   --stun stun:<stun-host>:3478 \
   --turn turn:<turn-host>:3478 \
@@ -1650,18 +1650,18 @@ Expected: no build/vet output; all tests PASS.
 
 Terminal 1 — broker (free tier, STUN only):
 ```bash
-go run ./cmd/simcast-signal --addr :9000 --stun stun:stun.l.google.com:19302
+go run ./cmd/simbeam-signal --addr :9000 --stun stun:stun.l.google.com:19302
 ```
-Expected: `simcast-signal listening on :9000 (ws path: /ws)`.
+Expected: `simbeam-signal listening on :9000 (ws path: /ws)`.
 
 Terminal 2 — daemon dialing the local broker (note `ws://` for localhost; the
 client base must match where the browser loads the page):
 ```bash
-go run ./cmd/simcastd serve --addr :8080 --web ./web/debug \
+go run ./cmd/simbeamd serve --addr :8080 --web ./web/debug \
   --signal ws://localhost:9000/ws \
   --client-url http://localhost:8080/
 ```
-Expected: prints `simcastd remote mode — broker: ws://localhost:9000/ws` and a
+Expected: prints `simbeamd remote mode — broker: ws://localhost:9000/ws` and a
 `Pair this device by opening:` URL of the form
 `http://localhost:8080/#signal=ws%3A...&token=...&pubkey=...`.
 
@@ -1683,7 +1683,7 @@ If any step fails, debug before continuing — do not mark complete on assumptio
 
 Stop the remote daemon. Run the plain local daemon:
 ```bash
-go run ./cmd/simcastd serve --addr :8080 --web ./web/debug
+go run ./cmd/simbeamd serve --addr :8080 --web ./web/debug
 ```
 Open `http://localhost:8080/` (no fragment). Verify RTC mode pairs over `/rtc`
 exactly as in 3a (list over DataChannel, attach shows video) and the JPG
@@ -1713,7 +1713,7 @@ Mac), регистрирует «комнату» по одноразовому 
 брокер и **проверяет подпись answer'а** по `daemonPubKey` (анти-MITM, Ed25519). Видео
 и control идут P2P (DTLS-SRTP E2E); через брокер течёт только рукопожатие.
 
-Reference-брокер — `cmd/simcast-signal` (в этом репо). STUN раздаётся всем; TURN —
+Reference-брокер — `cmd/simbeam-signal` (в этом репо). STUN раздаётся всем; TURN —
 только «подписчикам» (в этой фазе — стаб `--grant-turn`), по короткоживущим HMAC-кредам
 для готового `coturn` (свой TURN не пишем). Деплой — `deploy/README.md`.
 
@@ -1721,9 +1721,9 @@ Reference-брокер — `cmd/simcast-signal` (в этом репо). STUN р�
 
 ```bash
 # терминал 1 — брокер
-go run ./cmd/simcast-signal --addr :9000 --stun stun:stun.l.google.com:19302
+go run ./cmd/simbeam-signal --addr :9000 --stun stun:stun.l.google.com:19302
 # терминал 2 — демон в remote-режиме
-go run ./cmd/simcastd serve --addr :8080 --web ./web/debug \
+go run ./cmd/simbeamd serve --addr :8080 --web ./web/debug \
   --signal ws://localhost:9000/ws --client-url http://localhost:8080/
 # открыть напечатанный pairing-URL в браузере
 ```
@@ -1733,7 +1733,7 @@ renegotiation нет (видео-трек pre-negotiated, решение #50). �
 локально не проверить — см. `deploy/README.md` и «deploy-only» сценарии.
 ```
 
-Also add `simcast-signal` to any command list in the README that enumerates binaries.
+Also add `simbeam-signal` to any command list in the README that enumerates binaries.
 
 - [ ] **Step 7: Record decisions**
 
@@ -1758,7 +1758,7 @@ git commit -m "docs: document Phase 3b remote rendezvous + decisions #51-54"
 ## Self-Review
 
 **Spec coverage (against `2026-06-03-phase4-remote-access-design.md`, the Phase 3b parts):**
-- ✅ Signaling service on Go, reference in-repo (`cmd/simcast-signal`): Tasks 3–4. Rooms by `pairingToken`, relay offer/answer, issues `iceServers`, zero-knowledge of media (handshake-only, decision #51).
+- ✅ Signaling service on Go, reference in-repo (`cmd/simbeam-signal`): Tasks 3–4. Rooms by `pairingToken`, relay offer/answer, issues `iceServers`, zero-knowledge of media (handshake-only, decision #51).
 - ✅ Daemon outbound dial, zero open ports, reuses 3a session: Task 6 (`DialSignal` + `startSession` from Task 5). Decision #52.
 - ✅ Pairing: `signalingURL` + one-time `pairingToken` + `daemonPubKey` via URL fragment; pubkey authenticates the handshake (Ed25519 signed answer): Tasks 2, 6, 7. Decision #54.
 - ✅ STUN/TURN gating: STUN to all, TURN to subscribers via ephemeral HMAC creds; subscription = stub (`--grant-turn`); free + `failed` → upsell: Tasks 1, 3, 7, 8. Decision #44/#54.

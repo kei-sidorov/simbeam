@@ -51,7 +51,7 @@ Home/клавиатура проходят по DataChannel; старый JPG-р
   RTCPeerConnection ──video◄── H.264 трек ──┐   (receiver.jitterBufferTarget=0)
   DataChannel ───────тачи──►────────────────┤
                                             ▼
-Mac: simcastd (Go)
+Mac: simbeamd (Go)
   ├─ REUSE internal/idb: Spawn (сайдкар), Describe, ScreenshotStream (PNG-кадры), hid
   ├─ NEW  internal/encoder/    — PNG-кадры → H.264 access unit'ы
   │        ├─ ffmpeg.go         — спавн ffmpeg(h264_videotoolbox), stdin PNG / stdout H.264
@@ -134,7 +134,7 @@ ffmpeg -hide_banner -loglevel warning \
 ## Компонент: сигналинг + оркестрация (`internal/server/rtc.go`, WS `/rtc?udid=X`)
 
 ```
-браузер                          simcastd /rtc
+браузер                          simbeamd /rtc
   createOffer + setLocal  ──────►
   (ICE gathering complete)
   send offer SDP          ──────►  setRemote(offer)

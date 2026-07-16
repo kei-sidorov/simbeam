@@ -11,8 +11,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/kei-sidorov/simcast/internal/rtc"
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/rtc"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // toWebRTC converts broker iceServers to pion's type (kept here so

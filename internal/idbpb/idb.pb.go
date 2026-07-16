@@ -9713,7 +9713,7 @@ const file_proto_idb_proto_rawDesc = "" +
 	"\x02rm\x12\x0e.idb.RmRequest\x1a\x0f.idb.RmResponse\"\x00\x12/\n" +
 	"\x04pull\x12\x10.idb.PullRequest\x1a\x11.idb.PullResponse\"\x000\x01\x12/\n" +
 	"\x04push\x12\x10.idb.PushRequest\x1a\x11.idb.PushResponse\"\x00(\x01\x121\n" +
-	"\x04tail\x12\x10.idb.TailRequest\x1a\x11.idb.TailResponse\"\x00(\x010\x01B5Z3github.com/kei-sidorov/simcast/internal/idbpb;idbpbb\x06proto3"
+	"\x04tail\x12\x10.idb.TailRequest\x1a\x11.idb.TailResponse\"\x00(\x010\x01B5Z3github.com/kei-sidorov/simbeam/internal/idbpb;idbpbb\x06proto3"
 
 var (
 	file_proto_idb_proto_rawDescOnce sync.Once

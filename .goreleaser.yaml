@@ -1,34 +1,34 @@
 version: 2
 
-project_name: simcast
+project_name: simbeam
 
 builds:
-  - id: simcastd
-    main: ./cmd/simcastd
-    binary: simcastd
+  - id: simbeamd
+    main: ./cmd/simbeamd
+    binary: simbeamd
     env:
       - CGO_ENABLED=0
     goos: [darwin]
     goarch: [arm64, amd64]
-    # Bake the broker so `simcastd serve` needs no flags. Pairing carries the rest
+    # Bake the broker so `simbeamd serve` needs no flags. Pairing carries the rest
     # in the URL; no page/Caddy hosting required.
     ldflags:
-      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simcast.sidorov.tech/ws
-  # Linux build of the same daemon: runs `simcastd demo` (headless-browser demo
+      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simbeam.sidorov.tech/ws
+  # Linux build of the same daemon: runs `simbeamd demo` (headless-browser demo
   # device) on a VPS. Separate build/archive id so the Homebrew cask below keeps
   # picking up only the darwin archives.
-  - id: simcastd-linux
-    main: ./cmd/simcastd
-    binary: simcastd
+  - id: simbeamd-linux
+    main: ./cmd/simbeamd
+    binary: simbeamd
     env:
       - CGO_ENABLED=0
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags:
-      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simcast.sidorov.tech/ws
-  - id: simcast-signal
-    main: ./cmd/simcast-signal
-    binary: simcast-signal
+      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simbeam.sidorov.tech/ws
+  - id: simbeam-signal
+    main: ./cmd/simbeam-signal
+    binary: simbeam-signal
     env:
       - CGO_ENABLED=0
     goos: [linux]
@@ -37,28 +37,28 @@ builds:
       - -s -w -X main.version={{ .Version }}
 
 archives:
-  - id: simcastd
-    ids: [simcastd]
-    name_template: "simcastd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-  - id: simcastd-linux
-    ids: [simcastd-linux]
-    name_template: "simcastd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-  - id: simcast-signal
-    ids: [simcast-signal]
-    name_template: "simcast-signal_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: simbeamd
+    ids: [simbeamd]
+    name_template: "simbeamd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: simbeamd-linux
+    ids: [simbeamd-linux]
+    name_template: "simbeamd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: simbeam-signal
+    ids: [simbeam-signal]
+    name_template: "simbeam-signal_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"
 
 homebrew_casks:
-  - name: simcastd
-    ids: [simcastd]
+  - name: simbeamd
+    ids: [simbeamd]
     repository:
       owner: kei-sidorov
-      name: homebrew-simcast
+      name: homebrew-simbeam
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: "https://github.com/kei-sidorov/simcast"
-    description: "simcast daemon — stream an iOS simulator from Mac to iPad"
+    homepage: "https://github.com/kei-sidorov/simbeam"
+    description: "simbeam daemon — stream an iOS simulator from Mac to iPad"
     dependencies:
       # idb-companion is NOT in homebrew-core — it lives in Meta's facebook/fb
       # tap. A bare "idb-companion" only resolves on a machine that already
@@ -68,9 +68,9 @@ homebrew_casks:
       - formula: facebook/fb/idb-companion
       - formula: ffmpeg
     caveats: |
-      simcastd is shipped as an unsigned binary. The cask's post-install hook
+      simbeamd is shipped as an unsigned binary. The cask's post-install hook
       strips the macOS quarantine attribute so Gatekeeper should not block it.
-      simcastd shells out to idb_companion (simulators) and ffmpeg (h264_videotoolbox).
+      simbeamd shells out to idb_companion (simulators) and ffmpeg (h264_videotoolbox).
 
       idb_companion comes from Meta's tap. If install fails to find it, run:
         brew tap facebook/fb
@@ -78,10 +78,10 @@ homebrew_casks:
       post:
         install: |
           if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/simcastd"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/simbeamd"]
           end
 
 release:
   github:
     owner: kei-sidorov
-    name: simcast
+    name: simbeam

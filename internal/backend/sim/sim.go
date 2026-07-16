@@ -9,10 +9,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/encoder"
-	"github.com/kei-sidorov/simcast/internal/idb"
-	"github.com/kei-sidorov/simcast/internal/server"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/idb"
+	"github.com/kei-sidorov/simbeam/internal/server"
 )
 
 // fps is the screenshot/encode frame rate for the WebRTC path. Not a knob: one

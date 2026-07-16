@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // Identity is the daemon's long-lived Ed25519 keypair. PubB64 (base64 std) is

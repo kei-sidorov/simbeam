@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
 )
 
 // stubFeed is an inert Feed that records the input routed to it and serves a

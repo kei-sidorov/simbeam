@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 // replayWindow bounds how far issued_at may drift from the server clock. Generous

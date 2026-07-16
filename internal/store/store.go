@@ -1,4 +1,4 @@
-// Package store holds the simcast subscription persistence behind a thin Store
+// Package store holds the simbeam subscription persistence behind a thin Store
 // interface. The only durable server state is the subscriptions table; daemon
 // keys and the list of paired Macs live on the endpoints (decision: minimal DB).
 // SQLite now, Postgres later by swapping the implementation behind Store.

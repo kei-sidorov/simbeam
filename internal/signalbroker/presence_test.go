@@ -6,7 +6,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 func watch(t *testing.T, c *websocket.Conn, ids ...string) {

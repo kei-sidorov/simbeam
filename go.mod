@@ -1,4 +1,4 @@
-module github.com/kei-sidorov/simcast
+module github.com/kei-sidorov/simbeam
 
 go 1.26
 

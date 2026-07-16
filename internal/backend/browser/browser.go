@@ -18,9 +18,9 @@ import (
 	"github.com/chromedp/chromedp/device"
 	"github.com/chromedp/chromedp/kb"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/encoder"
-	"github.com/kei-sidorov/simcast/internal/server"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/server"
 )
 
 // fps is the screenshot/encode frame rate, matching the sim backend.

@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-06
 **Status:** approved (brainstorming) → ready for plan
-**Scope:** Ship simcast as a forkable open-core project: release the macOS daemon via a
+**Scope:** Ship simbeam as a forkable open-core project: release the macOS daemon via a
 Homebrew tap, release the Linux signaller, and stand up a self-hosted server that
 auto-updates itself. **Out of scope:** server-side Apple-receipt verification (explicitly
 dropped — the subscription endpoint stays client-asserted as in Phase 3C).
@@ -10,8 +10,8 @@ dropped — the subscription endpoint stays client-asserted as in Phase 3C).
 ## Goals
 
 1. One release pipeline that builds both binaries and publishes them.
-2. `brew install` the macOS daemon (`simcastd`) from a public tap.
-3. A VPS running `simcast-signal` + coturn behind TLS that pulls and applies new
+2. `brew install` the macOS daemon (`simbeamd`) from a public tap.
+3. A VPS running `simbeam-signal` + coturn behind TLS that pulls and applies new
    releases automatically, with **zero server secrets in the repo or CI**.
 4. The public repo stays clean and forkable: generic deploy scaffolding is in-repo,
    but all secrets/personal values live only on the server.
@@ -34,19 +34,19 @@ dropped — the subscription endpoint stays client-asserted as in Phase 3C).
 
 Two independently-shippable artifacts from one Go module:
 
-- **`simcastd`** (macOS daemon) — distributed via Homebrew. Runtime deps:
+- **`simbeamd`** (macOS daemon) — distributed via Homebrew. Runtime deps:
   `idb-companion` and `ffmpeg` (the encoder shells out to `ffmpeg` and needs the
   `h264_videotoolbox` encoder — `internal/encoder/ffmpeg.go`).
-- **`simcast-signal`** (Linux broker) — distributed as a release binary the VPS pulls.
+- **`simbeam-signal`** (Linux broker) — distributed as a release binary the VPS pulls.
 
 Data flow of a release:
 ```
 git tag v1.2.3  →  GitHub Actions (release.yml)  →  goreleaser release
-   ├─ GitHub Release: simcastd_darwin_{arm64,amd64}.tar.gz,
-   │                  simcast-signal_linux_amd64.tar.gz, checksums.txt
-   └─ push Homebrew formula → tap repo  kei-sidorov/homebrew-simcast
+   ├─ GitHub Release: simbeamd_darwin_{arm64,amd64}.tar.gz,
+   │                  simbeam-signal_linux_amd64.tar.gz, checksums.txt
+   └─ push Homebrew formula → tap repo  kei-sidorov/homebrew-simbeam
 
-macOS user:   brew install kei-sidorov/simcast/simcastd ;  brew upgrade  (manual)
+macOS user:   brew install kei-sidorov/simbeam/simbeamd ;  brew upgrade  (manual)
 VPS:          systemd timer → updater script → GitHub Releases API →
               download linux binary + verify checksum → atomic swap → restart unit
 ```
@@ -56,13 +56,13 @@ VPS:          systemd timer → updater script → GitHub Releases API →
 ### 1. GoReleaser config — `.goreleaser.yaml`
 
 - `builds:` two entries:
-  - `simcastd`: main `./cmd/simcastd`, GOOS=darwin, GOARCH=[arm64, amd64].
-  - `simcast-signal`: main `./cmd/simcast-signal`, GOOS=linux, GOARCH=amd64.
+  - `simbeamd`: main `./cmd/simbeamd`, GOOS=darwin, GOARCH=[arm64, amd64].
+  - `simbeam-signal`: main `./cmd/simbeam-signal`, GOOS=linux, GOARCH=amd64.
   - Both inject version: `ldflags: -s -w -X main.version={{.Version}}`.
 - `archives:` tar.gz per build, name template includes os/arch.
 - `checksum:` `checksums.txt` (SHA-256).
-- `brews:` one formula for `simcastd`:
-  - tap repository: `kei-sidorov/homebrew-simcast`.
+- `brews:` one formula for `simbeamd`:
+  - tap repository: `kei-sidorov/homebrew-simbeam`.
   - installs the prebuilt binary from the darwin archive (no build-from-source).
   - `depends_on "idb-companion"` and `depends_on "ffmpeg"`.
   - caveats note: unsigned binary; Homebrew strips quarantine on install.
@@ -73,11 +73,11 @@ artifacts locally without publishing.
 
 ### 2. Version flags
 
-Add a `version` var (default `"dev"`) to both `cmd/simcastd` and `cmd/simcast-signal`,
+Add a `version` var (default `"dev"`) to both `cmd/simbeamd` and `cmd/simbeam-signal`,
 set via ldflags at release. Surface it:
-- `simcast-signal --version` → prints version and exits (the updater compares this
+- `simbeam-signal --version` → prints version and exits (the updater compares this
   against the latest GitHub tag).
-- `simcastd version` (subcommand, consistent with its existing subcommand style) →
+- `simbeamd version` (subcommand, consistent with its existing subcommand style) →
   prints version.
 
 ### 3. GitHub Actions — `.github/workflows/`
@@ -92,29 +92,29 @@ set via ldflags at release. Surface it:
 
 Generic, secret-free, reusable. Personal values come from an on-server env file.
 
-- `deploy/systemd/simcast-signal.service` — runs `/usr/local/bin/simcast-signal` with
-  flags; reads `EnvironmentFile=/etc/simcast/signal.env` (NOT in the repo) for
+- `deploy/systemd/simbeam-signal.service` — runs `/usr/local/bin/simbeam-signal` with
+  flags; reads `EnvironmentFile=/etc/simbeam/signal.env` (NOT in the repo) for
   `SIMCAST_APP_SECRET`, `--turn-secret`, TURN/STUN URLs, listen addr, db path.
   Hardening: `Restart=always`, dedicated user, `ProtectSystem`, etc.
-- `deploy/simcast-signal-update.sh` — the pull updater:
+- `deploy/simbeam-signal-update.sh` — the pull updater:
   1. GET GitHub Releases "latest" → tag.
-  2. Compare to `simcast-signal --version`; exit 0 if equal.
-  3. Download `simcast-signal_linux_amd64.tar.gz` + `checksums.txt`.
+  2. Compare to `simbeam-signal --version`; exit 0 if equal.
+  3. Download `simbeam-signal_linux_amd64.tar.gz` + `checksums.txt`.
   4. Verify SHA-256 against checksums; abort on mismatch.
-  5. Atomic install to `/usr/local/bin` (temp + `mv`), then `systemctl restart simcast-signal`.
+  5. Atomic install to `/usr/local/bin` (temp + `mv`), then `systemctl restart simbeam-signal`.
   - Supports `--dry-run`; logs to journald; idempotent.
-- `deploy/systemd/simcast-signal-update.service` (Type=oneshot, runs the script) +
-  `deploy/systemd/simcast-signal-update.timer` (every ~10 min, `Persistent=true`).
+- `deploy/systemd/simbeam-signal-update.service` (Type=oneshot, runs the script) +
+  `deploy/systemd/simbeam-signal-update.timer` (every ~10 min, `Persistent=true`).
 - `deploy/Caddyfile` — `signal.<domain>` reverse-proxies WebSocket to broker `:9000`
   with automatic HTTPS (Let's Encrypt). Pairing URLs use `wss://signal.<domain>/ws`.
 - `deploy/coturn/turnserver.conf` — existing; doc reaffirms `static-auth-secret` must
   equal the broker `--turn-secret`, plus `external-ip` / `realm`.
 - `deploy/bootstrap.sh` — first-time VPS setup on a clean host: install coturn (apt),
-  lay down systemd units + Caddyfile, create `/etc/simcast/signal.env` from a template,
-  do the first `simcast-signal-update.sh` pull, `systemctl enable --now` the units and
+  lay down systemd units + Caddyfile, create `/etc/simbeam/signal.env` from a template,
+  do the first `simbeam-signal-update.sh` pull, `systemctl enable --now` the units and
   timer. Parameterized by env/prompts; contains no personal values itself.
 - `deploy/signal.env.example` — template for the on-server env file (committed; the real
-  `/etc/simcast/signal.env` is not).
+  `/etc/simbeam/signal.env` is not).
 
 ### 5. Documentation
 
@@ -134,9 +134,9 @@ Generic, secret-free, reusable. Personal values come from an on-server env file.
 
 The repo currently has no remote. Steps (the interactive `gh auth` / repo creation is
 done by the user via `!`):
-- `gh repo create kei-sidorov/simcast --public --source=. --remote=origin --push`
+- `gh repo create kei-sidorov/simbeam --public --source=. --remote=origin --push`
   (or add the remote manually and `git push -u origin main`).
-- Create the empty public tap repo `kei-sidorov/homebrew-simcast`.
+- Create the empty public tap repo `kei-sidorov/homebrew-simbeam`.
 - Add `HOMEBREW_TAP_TOKEN` to the main repo's Actions secrets.
 
 ## Fork-friendliness (the explicit concern)
@@ -146,7 +146,7 @@ fork-friendly **because it is secret-free and reusable**. The boundary:
 
 - **In repo (generic):** GoReleaser config, workflows, systemd unit templates, the
   updater script, Caddyfile, coturn conf, bootstrap script, `signal.env.example`.
-- **On the server only (personal/secret):** `/etc/simcast/signal.env` (app secret,
+- **On the server only (personal/secret):** `/etc/simbeam/signal.env` (app secret,
   turn secret, domain), TLS certs (Caddy-managed), the actual server.
 - **In repo Actions secrets only:** `HOMEBREW_TAP_TOKEN`. No SSH keys, no server info —
   the pull model needs none.
@@ -161,9 +161,9 @@ This phase is infrastructure; little is Go-unit-testable.
 - CI (`ci.yml`) green on the changes.
 - `goreleaser check` passes; `goreleaser release --snapshot --clean` builds all three
   artifacts locally (no publish) — the primary pre-merge gate.
-- `shellcheck` clean on `simcast-signal-update.sh` and `bootstrap.sh`; updater exercised
+- `shellcheck` clean on `simbeam-signal-update.sh` and `bootstrap.sh`; updater exercised
   with `--dry-run`.
-- Version flags: `go run ./cmd/simcast-signal --version` and `simcastd version` print
+- Version flags: `go run ./cmd/simbeam-signal --version` and `simbeamd version` print
   the injected value (`dev` outside a release).
 - Caddy / systemd / coturn / live auto-update: documented manual verification on the VPS
   (not reproducible in CI). Definition of done for the manual leg: tag a release, watch

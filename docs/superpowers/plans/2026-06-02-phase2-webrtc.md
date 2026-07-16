@@ -520,7 +520,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/kei-sidorov/simcast/internal/idb"
+	"github.com/kei-sidorov/simbeam/internal/idb"
 )
 
 // applyControl dispatches one parsed control message to the idb client, scaling
@@ -704,7 +704,7 @@ func New(onControl func([]byte)) (*Session, error) {
 		return nil, err
 	}
 	track, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "simcast")
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "simbeam")
 	if err != nil {
 		_ = pc.Close()
 		return nil, err
@@ -837,9 +837,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/encoder"
-	"github.com/kei-sidorov/simcast/internal/idb"
-	"github.com/kei-sidorov/simcast/internal/rtc"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/idb"
+	"github.com/kei-sidorov/simbeam/internal/rtc"
 )
 
 // rtcFPS is the screenshot/encode frame rate for the WebRTC path.
@@ -983,7 +983,7 @@ Overwrite `web/debug/index.html` with:
 <html>
 <head>
   <meta charset="utf-8">
-  <title>simcast debug</title>
+  <title>simbeam debug</title>
   <style>
     body { font-family: -apple-system, sans-serif; margin: 16px; }
     #sims button { display: block; margin: 4px 0; }
@@ -1237,7 +1237,7 @@ git commit -m "feat(web): RTC/JPG toggle with low-latency WebRTC video + DataCha
 
 - [ ] **Step 1: Запустить демон**
 
-Run: `go run ./cmd/simcastd serve --web ./web/debug`
+Run: `go run ./cmd/simbeamd serve --web ./web/debug`
 Open: `http://localhost:8080/` (Chrome для `jitterBufferTarget`).
 
 - [ ] **Step 2: Проверить RTC-режим (дефолт)**

@@ -50,7 +50,7 @@
    брокеру не виден); дальше — только взаимный key-challenge.
 6. **Подписка — отдельный аутентифицированный HTTPS-endpoint** с двумя подписями (app-secret HMAC
    слабый + account Ed25519 настоящий), idempotent last-write-wins; гейт TURN читает `Store`.
-7. **Один серверный процесс** `simcast-signal`: брокер WS + HTTP-API + SQLite (`Store`-интерфейс).
+7. **Один серверный процесс** `simbeam-signal`: брокер WS + HTTP-API + SQLite (`Store`-интерфейс).
 
 ---
 
@@ -59,9 +59,9 @@
 ### Ключи (постоянные, на концах)
 
 - **Демон** при первом старте генерит долгоживущую пару Ed25519, кладёт на диск
-  (`~/.simcast/identity.key`, права 0600). Публичная часть base64 = **`daemonID`** — одновременно
+  (`~/.simbeam/identity.key`, права 0600). Публичная часть base64 = **`daemonID`** — одновременно
   стабильный адрес на брокере и криптоудостоверение. Рядом — **набор запиненных клиентских pubkey**
-  (`~/.simcast/clients.json`): кому разрешено подключаться (+ опц. имя устройства).
+  (`~/.simbeam/clients.json`): кому разрешено подключаться (+ опц. имя устройства).
 - **Клиент** (браузер/iPad) генерит свою пару Ed25519. Приватный ключ — в `localStorage` (браузер)
   / Keychain с iCloud-синком (iPad). Хранит локально **список запиненных Mac'ов**:
   `[{daemonID, daemonPubKey, name}]`. **Один клиентский ключ** играет две роли: идентичность для
@@ -191,7 +191,7 @@ STUN-only. Это **на рукопожатии, не в горячем меди
 
 ## 4. Серверный процесс
 
-**Один бинарь `simcast-signal`** (расширяем существующий) — три функции в одном процессе:
+**Один бинарь `simbeam-signal`** (расширяем существующий) — три функции в одном процессе:
 
 1. **Брокер WS (`/ws`)** — как в 3b, плюс: постоянная регистрация демона по `daemonID`, релей
    взаимного challenge-response (§1), гейт TURN по подписке (§3).
@@ -207,7 +207,7 @@ STUN-only. Это **на рукопожатии, не в горячем меди
 env. Стаб `--grant-turn` **убираем** (гейт читает `Store`; оба тарифа в тесте даём эмуляцией
 подписки).
 
-**Демон `simcastd`** получает:
+**Демон `simbeamd`** получает:
 - постоянную идентичность (ключ на диске) + pinned-clients store + команду ревокации;
 - режим **persistent serve** (`serve --signal …`) — коннектится навсегда с auto-reconnect под
   `daemonID`, обслуживает реконнекты запиненных клиентов;
@@ -276,8 +276,8 @@ env. Стаб `--grant-turn` **убираем** (гейт читает `Store`; 
 - `internal/store` (новый) — интерфейс `Store` + реализация над SQLite (`database/sql`).
 - `internal/server` (демон) — постоянная идентичность, pinned-store, persistent serve + reconnect,
   pairing-окно.
-- `cmd/simcast-signal` — флаги `--db`, env `APP_SECRET`; убрать `--grant-turn`.
-- `cmd/simcastd` — persistent serve, pairing-триггер.
+- `cmd/simbeam-signal` — флаги `--db`, env `APP_SECRET`; убрать `--grant-turn`.
+- `cmd/simbeamd` — persistent serve, pairing-триггер.
 - `web/debug/index.html` — идентичность, пейринг, «мои Mac'ы», панель подписки, индикатор TURN,
   авто-reconnect.
 

@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Pull-based auto-updater for simcast-signal.
+# Pull-based auto-updater for simbeam-signal.
 #
 # Polls the GitHub Releases API for the latest tag; if it differs from the running
 # binary's --version, downloads + checksum-verifies + atomically installs the new
 # linux/amd64 binary and restarts the systemd unit. Designed to run from a systemd
-# timer (see deploy/systemd/simcast-signal-update.timer). Pass --dry-run to check
+# timer (see deploy/systemd/simbeam-signal-update.timer). Pass --dry-run to check
 # without installing. No secrets required (public repo).
 set -euo pipefail
 
-REPO="${SIMCAST_REPO:-kei-sidorov/simcast}"
-BIN_PATH="${SIMCAST_BIN:-/usr/local/bin/simcast-signal}"
-UNIT="${SIMCAST_UNIT:-simcast-signal}"
+REPO="${SIMCAST_REPO:-kei-sidorov/simbeam}"
+BIN_PATH="${SIMCAST_BIN:-/usr/local/bin/simbeam-signal}"
+UNIT="${SIMCAST_UNIT:-simbeam-signal}"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
-log() { echo "simcast-update: $*"; }
+log() { echo "simbeam-update: $*"; }
 
 # Fetch the whole API response into a var FIRST, then parse it. Do not pipe curl
 # straight into `grep -m1`: grep closes the pipe after the first match while curl
@@ -34,7 +34,7 @@ log "update available: ${current} -> ${want}"
 if [ "${DRY_RUN}" = 1 ]; then log "dry-run: not installing"; exit 0; fi
 
 tmp="$(mktemp -d)"; trap 'rm -rf "${tmp}"' EXIT
-archive="simcast-signal_${want}_linux_amd64.tar.gz"
+archive="simbeam-signal_${want}_linux_amd64.tar.gz"
 base="https://github.com/${REPO}/releases/download/${latest_tag}"
 
 curl -fsSL -o "${tmp}/${archive}" "${base}/${archive}"
@@ -42,7 +42,7 @@ curl -fsSL -o "${tmp}/checksums.txt" "${base}/checksums.txt"
 ( cd "${tmp}" && grep " ${archive}\$" checksums.txt | sha256sum -c - )
 
 tar -xzf "${tmp}/${archive}" -C "${tmp}"
-install -m 0755 "${tmp}/simcast-signal" "${BIN_PATH}.new"
+install -m 0755 "${tmp}/simbeam-signal" "${BIN_PATH}.new"
 mv -f "${BIN_PATH}.new" "${BIN_PATH}"   # atomic swap (same filesystem)
 systemctl restart "${UNIT}"
 log "updated to ${want} and restarted ${UNIT}"

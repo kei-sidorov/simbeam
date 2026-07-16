@@ -3,8 +3,8 @@ package server
 import (
 	"context"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
 )
 
 // Companion is the device lifecycle surface the server needs (satisfied by

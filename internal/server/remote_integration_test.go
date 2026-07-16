@@ -12,10 +12,10 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/signalbroker"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signalbroker"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 // brokerFixture starts a real broker (optionally with a Store + TURN) on httptest

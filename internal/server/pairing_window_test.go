@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 func TestPairingWindow_VerifyConsumesSingleUse(t *testing.T) {

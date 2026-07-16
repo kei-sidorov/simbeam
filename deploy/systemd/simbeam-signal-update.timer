@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically check for a new simcast-signal release
+Description=Periodically check for a new simbeam-signal release
 
 [Timer]
 OnBootSec=2min

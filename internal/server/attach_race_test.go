@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
 )
 
 // liveFeed is a Feed that actually streams, unlike stubFeed's nil channel: it

@@ -9,8 +9,8 @@ import (
 
 	"github.com/chromedp/chromedp"
 
-	"github.com/kei-sidorov/simcast/internal/encoder"
-	"github.com/kei-sidorov/simcast/internal/server"
+	"github.com/kei-sidorov/simbeam/internal/encoder"
+	"github.com/kei-sidorov/simbeam/internal/server"
 )
 
 // TestLiveInputTapAfterDelay is the regression test for the halved-input bug:

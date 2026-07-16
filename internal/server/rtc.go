@@ -5,7 +5,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/kei-sidorov/simcast/internal/rtc"
+	"github.com/kei-sidorov/simbeam/internal/rtc"
 )
 
 // startSession builds a session-scoped control plane: a pre-negotiated

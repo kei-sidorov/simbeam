@@ -36,8 +36,8 @@
 - `internal/signalbroker/broker.go` — persistent presence by `daemonID`, challenge/proof relay, gate via `Store`; `Config` gains `Store`+`AppSecret`, loses `GrantTURN`.
 - `internal/server/remote.go` — replace one-shot `DialSignal` with persistent `ServeSignal`/`serveOnce`.
 - `internal/server/remote_integration_test.go` — rewrite for the 3C handshake.
-- `cmd/simcast-signal/main.go` — `--db`, `SIMCAST_APP_SECRET`, drop `--grant-turn`.
-- `cmd/simcastd/main.go` — persistent serve, P-keypress pairing, identity/clients flags, `unpair` subcommand.
+- `cmd/simbeam-signal/main.go` — `--db`, `SIMCAST_APP_SECRET`, drop `--grant-turn`.
+- `cmd/simbeamd/main.go` — persistent serve, P-keypress pairing, identity/clients flags, `unpair` subcommand.
 - `web/debug/index.html` — WebCrypto identity, enrollment, my-Macs, auto-reconnect, subscription panel, TURN indicator.
 - `docs/decisions.md`, `README.md`, `docs/ROADMAP.md` — record decisions #55+ and Phase 3C status.
 
@@ -473,7 +473,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 func TestPairingWindow_VerifyConsumesSingleUse(t *testing.T) {
@@ -536,7 +536,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // pairingWindow is a one-time, time-boxed enrollment authorization. While open,
@@ -967,7 +967,7 @@ Expected: FAIL — `undefined: OpenSQLite`.
 - [ ] **Step 4: Write `internal/store/store.go`**
 
 ```go
-// Package store holds the simcast subscription persistence behind a thin Store
+// Package store holds the simbeam subscription persistence behind a thin Store
 // interface. The only durable server state is the subscriptions table; daemon
 // keys and the list of paired Macs live on the endpoints (decision: minimal DB).
 // SQLite now, Postgres later by swapping the implementation behind Store.
@@ -1128,7 +1128,7 @@ This replaces the one-shot token room model with: a daemon registered persistent
 - [ ] **Step 1: Rewrite `internal/signalbroker/broker.go`**
 
 ```go
-// Package signalbroker is the simcast signaling broker: a thin WSS rendezvous.
+// Package signalbroker is the simbeam signaling broker: a thin WSS rendezvous.
 // A daemon registers persistently under its daemonID (its Ed25519 pubkey) and
 // stays present; a client is routed to it by daemonID. The broker relays a
 // mutual challenge-response (it authenticates only the client KEY, for the TURN
@@ -1147,8 +1147,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 // Config tunes ICE issuance, the subscription gate, and the subscription API.
@@ -1384,8 +1384,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 func wsURL(t *testing.T, srv *httptest.Server) string {
@@ -1576,8 +1576,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 func TestSubscriptionEndpoint_TwoSigUpsertAndGate(t *testing.T) {
@@ -1669,8 +1669,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 // replayWindow bounds how far issued_at may drift from the server clock. Generous
@@ -1814,15 +1814,15 @@ git commit -m "feat(broker): two-signature /v1/subscription API + /me + CORS"
 
 ---
 
-### Task 11: `cmd/simcast-signal` — `--db`, `SIMCAST_APP_SECRET`, drop `--grant-turn`
+### Task 11: `cmd/simbeam-signal` — `--db`, `SIMCAST_APP_SECRET`, drop `--grant-turn`
 
 **Files:**
-- Modify: `cmd/simcast-signal/main.go`
+- Modify: `cmd/simbeam-signal/main.go`
 
-- [ ] **Step 1: Rewrite `cmd/simcast-signal/main.go`**
+- [ ] **Step 1: Rewrite `cmd/simbeam-signal/main.go`**
 
 ```go
-// Command simcast-signal is the reference simcast signaling broker: a thin WSS
+// Command simbeam-signal is the reference simbeam signaling broker: a thin WSS
 // rendezvous that keeps a daemon present by daemonID, relays the mutual
 // challenge-response + one offer→answer, issues iceServers (STUN always; TURN
 // only when the client's subscription is active), and serves the subscription
@@ -1838,8 +1838,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/signalbroker"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/signalbroker"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 func main() {
@@ -1848,7 +1848,7 @@ func main() {
 	turn := flag.String("turn", "", "comma-separated TURN URLs (handed only to active subscribers)")
 	turnSecret := flag.String("turn-secret", "", "coturn static-auth-secret for ephemeral credentials")
 	turnTTL := flag.Duration("turn-ttl", time.Minute, "ephemeral TURN credential lifetime")
-	db := flag.String("db", "simcast.db", "SQLite path for the subscriptions store")
+	db := flag.String("db", "simbeam.db", "SQLite path for the subscriptions store")
 	flag.Parse()
 
 	st, err := store.OpenSQLite(*db)
@@ -1872,7 +1872,7 @@ func main() {
 		AppSecret:  appSecret,
 	})
 
-	fmt.Printf("simcast-signal listening on %s (ws: /ws, api: /v1/subscription, db: %s)\n", *addr, *db)
+	fmt.Printf("simbeam-signal listening on %s (ws: /ws, api: /v1/subscription, db: %s)\n", *addr, *db)
 	if err := http.ListenAndServe(*addr, b.Handler()); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -1892,13 +1892,13 @@ func splitNonEmpty(csv string) []string {
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `go build ./cmd/simcast-signal/`
+Run: `go build ./cmd/simbeam-signal/`
 Expected: builds clean, no `grant-turn` references remain.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/simcast-signal/main.go
+git add cmd/simbeam-signal/main.go
 git commit -m "feat(signal-cmd): --db + SIMCAST_APP_SECRET; remove --grant-turn stub"
 ```
 
@@ -1927,7 +1927,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
 // toWebRTC converts broker iceServers to pion's type (kept here so
@@ -2011,7 +2011,7 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 	// NOTE: use the concrete *rtc.Session type from startSession; the alias above
 	// is only to keep this snippet readable. Declare it as:
 	//   var sess *rtc.Session
-	// (import "github.com/kei-sidorov/simcast/internal/rtc" is already pulled in
+	// (import "github.com/kei-sidorov/simbeam/internal/rtc" is already pulled in
 	//  transitively via startSession's return type in rtc.go).
 
 	cleanup := func() {
@@ -2105,7 +2105,7 @@ Replace the `var ( … sess *rtc.SessionRef … )` block, the `_ = sess` line, t
 
 Add to the import block:
 ```go
-	"github.com/kei-sidorov/simcast/internal/rtc"
+	"github.com/kei-sidorov/simbeam/internal/rtc"
 ```
 
 Replace the state declaration with:
@@ -2162,7 +2162,7 @@ Delete the `_ = sess`, the NOTE comment, the `s.bindSession(...)` line, and the 
 - [ ] **Step 3: Build to verify it compiles**
 
 Run: `go build ./internal/server/`
-Expected: builds clean. (`cmd/simcastd` still references the old `DialSignal` — fixed in Task 13. The integration test still references the old flow — rewritten in Task 14. Build the package alone here.)
+Expected: builds clean. (`cmd/simbeamd` still references the old `DialSignal` — fixed in Task 13. The integration test still references the old flow — rewritten in Task 14. Build the package alone here.)
 
 - [ ] **Step 4: Commit**
 
@@ -2173,10 +2173,10 @@ git commit -m "feat(server): persistent ServeSignal with 3C handshake + auto-rec
 
 ---
 
-### Task 13: `cmd/simcastd` — persistent serve, P-keypress pairing, `unpair`
+### Task 13: `cmd/simbeamd` — persistent serve, P-keypress pairing, `unpair`
 
 **Files:**
-- Modify: `cmd/simcastd/main.go`
+- Modify: `cmd/simbeamd/main.go`
 - Modify: `go.mod` / `go.sum` (add `golang.org/x/term`)
 
 The daemon loads its identity + pinned store, serves persistently, and watches the terminal: pressing **`p`** opens a one-time enrollment window and prints the pairing URL; **`q`**/Ctrl-C quits. A separate `unpair <clientPubKey>` subcommand revokes a device.
@@ -2186,15 +2186,15 @@ The daemon loads its identity + pinned store, serves persistently, and watches t
 Run: `go get golang.org/x/term@latest`
 Expected: `go.mod` gains `golang.org/x/term`.
 
-- [ ] **Step 2: Replace `runServe`/`runRemote` and add `unpair` in `cmd/simcastd/main.go`**
+- [ ] **Step 2: Replace `runServe`/`runRemote` and add `unpair` in `cmd/simbeamd/main.go`**
 
 Update the imports to include:
 ```go
 	"path/filepath"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/server"
-	"github.com/kei-sidorov/simcast/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/server"
+	"github.com/kei-sidorov/simbeam/internal/signal"
 	"golang.org/x/term"
 ```
 (remove the now-unused `net` import only if it is no longer referenced after this edit — `runRemote` still binds a local listener, so keep `net`.)
@@ -2210,13 +2210,13 @@ Add `unpair` to the command switch in `main` (alongside `list`/`serve`):
 
 Add the default identity/clients paths helper:
 ```go
-// defaultStatePath returns ~/.simcast/<name>, falling back to ./.simcast/<name>.
+// defaultStatePath returns ~/.simbeam/<name>, falling back to ./.simbeam/<name>.
 func defaultStatePath(name string) string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".simcast", name)
+		return filepath.Join(".simbeam", name)
 	}
-	return filepath.Join(home, ".simcast", name)
+	return filepath.Join(home, ".simbeam", name)
 }
 ```
 
@@ -2244,7 +2244,7 @@ func runServe(argv []string) error {
 		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir, *identityPath, *clientsPath, *pairTTL)
 	}
 
-	fmt.Printf("simcastd serving on %s (idb_companion: %s)\n", *addr, path)
+	fmt.Printf("simbeamd serving on %s (idb_companion: %s)\n", *addr, path)
 	if *webDir != "" {
 		fmt.Printf("debug client: http://localhost%s/\n", *addr)
 	}
@@ -2288,7 +2288,7 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	fmt.Printf("simcastd remote mode — broker: %s\n", signalURL)
+	fmt.Printf("simbeamd remote mode — broker: %s\n", signalURL)
 	fmt.Printf("daemonID: %s\n", id.PubB64)
 	fmt.Println("Press P to pair a new device (opens a one-time window). Press Q to quit.")
 
@@ -2345,7 +2345,7 @@ func runUnpair(argv []string) error {
 	clientsPath := fs.String("clients", defaultStatePath("clients.json"), "path to the pinned-clients store")
 	_ = fs.Parse(argv)
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: simcastd unpair [--clients path] <clientPubKey>")
+		return fmt.Errorf("usage: simbeamd unpair [--clients path] <clientPubKey>")
 	}
 	pinned, err := server.LoadPinnedStore(*clientsPath)
 	if err != nil {
@@ -2361,8 +2361,8 @@ func runUnpair(argv []string) error {
 
 Add `"context"` and `"log"` to imports if not present, and update `usage` to mention the new subcommand and keys:
 ```go
-	fmt.Fprintln(w, "  simcastd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
-	fmt.Fprintln(w, "  simcastd unpair  Revoke a paired client: simcastd unpair <clientPubKey>")
+	fmt.Fprintln(w, "  simbeamd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
+	fmt.Fprintln(w, "  simbeamd unpair  Revoke a paired client: simbeamd unpair <clientPubKey>")
 ```
 
 - [ ] **Step 3: Add the exported `NewPairingWindow` constructor**
@@ -2381,14 +2381,14 @@ And in `internal/server/remote.go`, change `ServeSignal`/`serveOnce` signatures'
 
 - [ ] **Step 4: Build to verify it compiles**
 
-Run: `go build ./cmd/simcastd/ ./internal/server/`
+Run: `go build ./cmd/simbeamd/ ./internal/server/`
 Expected: builds clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/simcastd/main.go internal/server/pairing_window.go go.mod go.sum
-git commit -m "feat(simcastd): persistent serve, P-keypress pairing window, unpair, x/term"
+git add cmd/simbeamd/main.go internal/server/pairing_window.go go.mod go.sum
+git commit -m "feat(simbeamd): persistent serve, P-keypress pairing window, unpair, x/term"
 ```
 
 ---
@@ -2419,10 +2419,10 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
-	"github.com/kei-sidorov/simcast/internal/signal"
-	"github.com/kei-sidorov/simcast/internal/signalbroker"
-	"github.com/kei-sidorov/simcast/internal/store"
+	"github.com/kei-sidorov/simbeam/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/signalbroker"
+	"github.com/kei-sidorov/simbeam/internal/store"
 )
 
 // brokerFixture starts a real broker (optionally with a Store + TURN) on httptest
@@ -2822,8 +2822,8 @@ let clientPub = null;                // base64 (std) raw public key = account id
 function bytesToB64(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s); }
 
 async function loadOrCreateIdentity() {
-  const stored = localStorage.getItem('simcast_priv_pkcs8');
-  const storedPub = localStorage.getItem('simcast_pub');
+  const stored = localStorage.getItem('simbeam_priv_pkcs8');
+  const storedPub = localStorage.getItem('simbeam_pub');
   if (stored && storedPub) {
     clientPriv = await crypto.subtle.importKey('pkcs8', b64ToBytes(stored), {name: 'Ed25519'}, true, ['sign']);
     clientPub = storedPub;
@@ -2834,8 +2834,8 @@ async function loadOrCreateIdentity() {
   const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
   clientPriv = kp.privateKey;
   clientPub = bytesToB64(raw);
-  localStorage.setItem('simcast_priv_pkcs8', bytesToB64(pkcs8));
-  localStorage.setItem('simcast_pub', clientPub);
+  localStorage.setItem('simbeam_priv_pkcs8', bytesToB64(pkcs8));
+  localStorage.setItem('simbeam_pub', clientPub);
 }
 
 async function signEd25519(bytes) {
@@ -2869,8 +2869,8 @@ function renderIdentity() {
 }
 
 document.getElementById('resetIdentity').onclick = async () => {
-  localStorage.removeItem('simcast_priv_pkcs8');
-  localStorage.removeItem('simcast_pub');
+  localStorage.removeItem('simbeam_priv_pkcs8');
+  localStorage.removeItem('simbeam_pub');
   await loadOrCreateIdentity();
   renderIdentity();
   alert('New account key generated. You must re-pair your Macs.');
@@ -2878,12 +2878,12 @@ document.getElementById('resetIdentity').onclick = async () => {
 
 // ---- 3C: my Macs (saved pinned daemons) ----
 function loadMacs() {
-  try { return JSON.parse(localStorage.getItem('simcast_macs') || '[]'); } catch (e) { return []; }
+  try { return JSON.parse(localStorage.getItem('simbeam_macs') || '[]'); } catch (e) { return []; }
 }
 function saveMac(mac) {
   const macs = loadMacs().filter(m => m.daemon !== mac.daemon);
   macs.push(mac);
-  localStorage.setItem('simcast_macs', JSON.stringify(macs));
+  localStorage.setItem('simbeam_macs', JSON.stringify(macs));
   renderMacs();
 }
 function renderMacs() {
@@ -2917,7 +2917,7 @@ Replace the final `enterMode();` line (~378) with:
 
 - [ ] **Step 4: Verify it loads (manual smoke)**
 
-Run: `go run ./cmd/simcastd serve --web web/debug --addr :8080` then open `http://localhost:8080/`.
+Run: `go run ./cmd/simbeamd serve --web web/debug --addr :8080` then open `http://localhost:8080/`.
 Expected: the page loads, "Account key" shows a truncated base64 key, "My Macs: none yet", a subscription panel. Console has no errors. (Tasks 17–18 add the missing `setupPairButton`/`setupSubscriptionPanel`/`connectRemote` — until then those calls will throw; acceptable mid-build. To smoke-test Task 16 alone, temporarily stub them as `function setupPairButton(){}` etc., then remove the stubs in 17/18.)
 
 - [ ] **Step 5: Commit**
@@ -3100,8 +3100,8 @@ function enterMode() {
 
 Run a broker + daemon locally:
 ```bash
-SIMCAST_APP_SECRET=dev-app-secret go run ./cmd/simcast-signal --addr :9000 --db /tmp/simcast.db
-go run ./cmd/simcastd serve --web web/debug --addr :8080 --signal ws://localhost:9000/ws
+SIMCAST_APP_SECRET=dev-app-secret go run ./cmd/simbeam-signal --addr :9000 --db /tmp/simbeam.db
+go run ./cmd/simbeamd serve --web web/debug --addr :8080 --signal ws://localhost:9000/ws
 ```
 Press **P** in the daemon terminal, open the printed pairing URL, click "Pair this Mac" → simulators list appears, the Mac is saved. Reload the page (drop the fragment), click the saved Mac → reconnects with no QR. Kill+restart the daemon → the page auto-reconnects once the daemon is back.
 
@@ -3177,7 +3177,7 @@ function refreshTurnIndicator(iceServers) {
 With the broker/daemon from Task 17 running and a TURN URL configured on the broker (`--turn turn:relay.example:3478 --turn-secret secret`):
 - Without applying a subscription, connect a saved Mac → indicator reads "STUN only".
 - Set an expiry date in the future, click **Apply** (status shows ✓), reconnect the Mac → indicator reads "YES (subscriber)".
-- Set the expiry to a past date, Apply, reconnect → back to "STUN only". Inspect `/tmp/simcast.db` with `sqlite3` to see the `subscriptions` row.
+- Set the expiry to a past date, Apply, reconnect → back to "STUN only". Inspect `/tmp/simbeam.db` with `sqlite3` to see the `subscriptions` row.
 
 - [ ] **Step 3: Commit**
 
@@ -3201,10 +3201,10 @@ Add these rows to the end of the decisions table (the latest existing row is #54
 
 ```markdown
 | 55 | Phase 3C: авторизация связи — **peer-pinning**, брокер untrusted. Демон пиннит клиентские ключи, клиент пиннит `daemonPubKey`; доступ к подключению решают концы по ключам, не брокер | анти-MITM без доверия к рандеву; медиа уже E2E (DTLS-SRTP, #7), защищаем рукопожатие криптографией концов |
-| 56 | Phase 3C: **постоянная идентичность демона** — долгоживущий Ed25519 на диске (`~/.simcast/identity.key`, 0600); `daemonID` = его pubkey. **Отменяет сессионный ключ из #54 и одноразовый token из #45/#51** | стабильный адрес на брокере + криптоудостоверение в одном; реконнект без повторного QR требует постоянного адреса |
+| 56 | Phase 3C: **постоянная идентичность демона** — долгоживущий Ed25519 на диске (`~/.simbeam/identity.key`, 0600); `daemonID` = его pubkey. **Отменяет сессионный ключ из #54 и одноразовый token из #45/#51** | стабильный адрес на брокере + криптоудостоверение в одном; реконнект без повторного QR требует постоянного адреса |
 | 57 | Phase 3C: **постоянное присутствие демона** — держит исходящий WSS к брокеру с auto-reconnect (экспон. backoff), всё время зарегистрирован под `daemonID`; presence у брокера в памяти `map[daemonID]→conn`. **Пересматривает #51** (signaling больше не «закрылся после рукопожатия») | Mac должен быть находим для реконнекта в любой момент; ноль открытых портов сохраняется (только исходящее) |
 | 58 | Phase 3C: перед offer/answer — **взаимный challenge-response**. Демон challenge'ит клиента nonce'ом (клиент подписывает → демон проверяет владение ключом + pinned); брокер отдельным nonce'ом аутентифицирует клиентский ключ для гейта TURN; доказательство демона клиенту = **подписанный answer (#54)**, отдельный daemon-nonce не нужен | минимум сообщений: переиспользуем подпись answer'а как proof демона; брокер узнаёт проверенный `clientPubKey`, ничего не решая о доступе |
-| 59 | Phase 3C: **первый пейринг — явное окно на демоне по нажатию `P` в терминале** (raw-mode, `golang.org/x/term`), одноразовый секрет `S` с TTL; клиент доказывает знание `S` через `HMAC-SHA256(S, clientPubKey‖0x00‖nonce)`, `S` брокеру не виден. Ревокация — `simcastd unpair <pubkey>` (локально) | интерактивный триггер по запросу пользователя; HMAC-доказательство анти-«чужой», окно single-use/TTL анти-абьюз |
+| 59 | Phase 3C: **первый пейринг — явное окно на демоне по нажатию `P` в терминале** (raw-mode, `golang.org/x/term`), одноразовый секрет `S` с TTL; клиент доказывает знание `S` через `HMAC-SHA256(S, clientPubKey‖0x00‖nonce)`, `S` брокеру не виден. Ревокация — `simbeamd unpair <pubkey>` (локально) | интерактивный триггер по запросу пользователя; HMAC-доказательство анти-«чужой», окно single-use/TTL анти-абьюз |
 | 60 | Phase 3C: БД минимальна — **одна таблица `subscriptions`** в SQLite за интерфейсом `Store`; ключи и список Mac'ов живут на концах (localStorage / iCloud Keychain), серверного восстановления нет | соответствует open-core: durable только то, что нужно для гейта; миграция на Postgres = вторая реализация `Store` |
 | 61 | Phase 3C: SQLite-драйвер — **`modernc.org/sqlite`** (чистый Go, без cgo) | герметичные `go test` без C-тулчейна, тривиальная кросс-компиляция под Homebrew-дистрибуцию Phase 4 |
 | 62 | Phase 3C: endpoint подписки `POST /v1/subscription` с **двумя подписями** — app-secret HMAC (слабый барьер «наш билд», честно обфускация) + Ed25519 account-подпись (настоящая привязка к ключу); idempotent last-write-wins по `issued_at`, время сравнения — серверные часы. Усиление чеком Apple — Phase 4, флип `source` без смены схемы | разделяем «наш билд» и «это тот аккаунт»; идемпотентность делает спам foreground/background безопасным |
@@ -3223,21 +3223,21 @@ Run the broker and the daemon, then pair a browser once and reconnect without QR
 
 ```bash
 # 1. Broker + subscription store (app secret must match the bench's dev value)
-SIMCAST_APP_SECRET=dev-app-secret go run ./cmd/simcast-signal \
-  --addr :9000 --db /tmp/simcast.db \
+SIMCAST_APP_SECRET=dev-app-secret go run ./cmd/simbeam-signal \
+  --addr :9000 --db /tmp/simbeam.db \
   --turn turn:relay.example:3478 --turn-secret secret   # TURN optional
 
 # 2. Daemon: persistent identity + serve, debug client at :8080
-go run ./cmd/simcastd serve --web web/debug --addr :8080 --signal ws://localhost:9000/ws
+go run ./cmd/simbeamd serve --web web/debug --addr :8080 --signal ws://localhost:9000/ws
 ```
 
 Press **P** in the daemon terminal to open a one-time pairing window; open the
 printed URL and click **Pair this Mac**. The browser saves the Mac and reconnects
 automatically afterwards (no QR). Revoke a device with
-`simcastd unpair <clientPubKey>`. Inspect subscriptions by opening `/tmp/simcast.db`
+`simbeamd unpair <clientPubKey>`. Inspect subscriptions by opening `/tmp/simbeam.db`
 in `sqlite3` / DB Browser.
 
-Identity files live in `~/.simcast/` (`identity.key`, `clients.json`, both 0600).
+Identity files live in `~/.simbeam/` (`identity.key`, `clients.json`, both 0600).
 ```
 
 - [ ] **Step 3: Update `docs/ROADMAP.md`**
@@ -3282,7 +3282,7 @@ Expected: all packages PASS — `internal/signal`, `internal/store`, `internal/s
 - [ ] **Step 3: Build all commands**
 
 Run: `go build ./...`
-Expected: clean build of `cmd/simcastd` and `cmd/simcast-signal`.
+Expected: clean build of `cmd/simbeamd` and `cmd/simbeam-signal`.
 
 - [ ] **Step 4: Final manual end-to-end (the Phase 3C DoD)**
 

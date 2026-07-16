@@ -17,12 +17,12 @@
 3. Пакет `internal/companion`:
    - функция, которая запускает `idb_companion --list 1`, парсит JSON-вывод в `[]Simulator`
      (UDID, name, OS version, state).
-4. `cmd/simcastd` с подкомандой `list`, которая печатает доступные симуляторы пользователя.
+4. `cmd/simbeamd` с подкомандой `list`, которая печатает доступные симуляторы пользователя.
 5. README обновлён инструкцией запуска.
 
 **Definition of Done:**
 ```
-go run ./cmd/simcastd list
+go run ./cmd/simbeamd list
 ```
 печатает РЕАЛЬНЫЙ список симуляторов с машины (UDID + имя + версия iOS + booted/shutdown).
 Никаких заглушек — данные из настоящего `idb_companion`.
@@ -66,7 +66,7 @@ go run ./cmd/simcastd list
 Полный дизайн — `docs/superpowers/specs/2026-06-03-phase4-remote-access-design.md`
 (имя файла историческое — это контент нынешней Phase 3).
 
-- **Signaling-сервер на Go** (`cmd/simcast-signal`): WSS-брокер «комнат» по `pairingToken`,
+- **Signaling-сервер на Go** (`cmd/simbeam-signal`): WSS-брокер «комнат» по `pairingToken`,
   релей offer/answer + ICE, выписка короткоживущих TURN-кредов (HMAC).
 - **Транспортные изменения демона:** control- и видео-плоскости разведены. PeerConnection +
   control-DataChannel поднимаются на пейринге (per-client-session, без UDID); list/boot/describe
@@ -96,10 +96,10 @@ Homebrew-дистрибуцию, Postgres (через `Store`).
 
 ## Phase 4 — Дистрибуция + self-host — done
 
-- **GoReleaser**: один пайплайн собирает `simcastd` (darwin arm64/amd64) и
-  `simcast-signal` (linux amd64) на тег `v*`.
-- **Homebrew tap** (`kei-sidorov/homebrew-simcast`): предсобранный неподписанный
-  `simcastd`, зависимости `idb-companion` + `ffmpeg`. Обновление — `brew upgrade`.
+- **GoReleaser**: один пайплайн собирает `simbeamd` (darwin arm64/amd64) и
+  `simbeam-signal` (linux amd64) на тег `v*`.
+- **Homebrew tap** (`kei-sidorov/homebrew-simbeam`): предсобранный неподписанный
+  `simbeamd`, зависимости `idb-companion` + `ffmpeg`. Обновление — `brew upgrade`.
 - **Self-host сервера**: VPS + systemd, брокер + coturn за Caddy (авто-TLS).
   **Pull-автообновление**: systemd timer тянет новый релиз из GitHub Releases,
   проверяет checksum, атомарно подменяет бинарь, рестартит юнит. Ноль серверных
@@ -119,12 +119,12 @@ endpoint без Mac-сетапа. Решение — интерактивное 
 - **`internal/backend/browser`**: headless Chromium (chromedp) с mobile-эмуляцией;
   скриншот-полл → тот же ffmpeg-пайплайн; tap/swipe/key → CDP-события; Home → стартовый URL.
 - **encoder**: `h264_videotoolbox` на darwin, `libx264` (ultrafast+zerolatency) на остальных.
-- **`simcastd demo`**: unattended-режим — pairing-окно с фиксированным секретом,
+- **`simbeamd demo`**: unattended-режим — pairing-окно с фиксированным секретом,
   перевзводится после каждого энролла (multi-use URL для App Review notes).
-- **Дистрибуция**: GoReleaser собирает `simcastd` и под linux (amd64/arm64);
-  `deploy/systemd/simcastd-demo.service` + `demo.env.example`; cask на Mac не тронут.
+- **Дистрибуция**: GoReleaser собирает `simbeamd` и под linux (amd64/arm64);
+  `deploy/systemd/simbeamd-demo.service` + `demo.env.example`; cask на Mac не тронут.
 
-**DoD (выполнено):** локальный брокер + `simcastd demo` + три реальных Chrome-клиента
+**DoD (выполнено):** локальный брокер + `simbeamd demo` + три реальных Chrome-клиента
 через web/debug — энролл по одному URL, attach, декодированное видео 390×844 по WebRTC.
 
 ---

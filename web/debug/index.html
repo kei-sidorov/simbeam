@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>simcast debug</title>
+  <title>simbeam debug</title>
   <style>
     body { font-family: -apple-system, sans-serif; margin: 16px; }
     #sims button { display: block; margin: 4px 0; }
@@ -54,15 +54,15 @@ let startGen = 0;
 // ---- 3C: account identity (WebCrypto Ed25519, persisted in localStorage) ----
 // App secret — must equal the broker's SIMCAST_APP_SECRET. Entered in the Start
 // panel and persisted in localStorage so it survives reloads.
-let appSecret = localStorage.getItem('simcast_app_secret') || 'dev-app-secret';
+let appSecret = localStorage.getItem('simbeam_app_secret') || 'dev-app-secret';
 let clientPriv = null;               // CryptoKey (Ed25519 private, usage ['sign'])
 let clientPub = null;                // base64 (std) raw public key = account id
 
 function bytesToB64(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s); }
 
 async function loadOrCreateIdentity() {
-  const stored = localStorage.getItem('simcast_priv_pkcs8');
-  const storedPub = localStorage.getItem('simcast_pub');
+  const stored = localStorage.getItem('simbeam_priv_pkcs8');
+  const storedPub = localStorage.getItem('simbeam_pub');
   if (stored && storedPub) {
     clientPriv = await crypto.subtle.importKey('pkcs8', b64ToBytes(stored), {name: 'Ed25519'}, true, ['sign']);
     clientPub = storedPub;
@@ -73,8 +73,8 @@ async function loadOrCreateIdentity() {
   const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
   clientPriv = kp.privateKey;
   clientPub = bytesToB64(raw);
-  localStorage.setItem('simcast_priv_pkcs8', bytesToB64(pkcs8));
-  localStorage.setItem('simcast_pub', clientPub);
+  localStorage.setItem('simbeam_priv_pkcs8', bytesToB64(pkcs8));
+  localStorage.setItem('simbeam_pub', clientPub);
 }
 
 async function signEd25519(bytes) {
@@ -108,8 +108,8 @@ function renderIdentity() {
 }
 
 document.getElementById('resetIdentity').onclick = async () => {
-  localStorage.removeItem('simcast_priv_pkcs8');
-  localStorage.removeItem('simcast_pub');
+  localStorage.removeItem('simbeam_priv_pkcs8');
+  localStorage.removeItem('simbeam_pub');
   await loadOrCreateIdentity();
   renderIdentity();
   alert('New account key generated. You must re-pair your Macs.');
@@ -117,12 +117,12 @@ document.getElementById('resetIdentity').onclick = async () => {
 
 // ---- 3C: my Macs (saved pinned daemons) ----
 function loadMacs() {
-  try { return JSON.parse(localStorage.getItem('simcast_macs') || '[]'); } catch (e) { return []; }
+  try { return JSON.parse(localStorage.getItem('simbeam_macs') || '[]'); } catch (e) { return []; }
 }
 function saveMac(mac) {
   const macs = loadMacs().filter(m => m.daemon !== mac.daemon);
   macs.push(mac);
-  localStorage.setItem('simcast_macs', JSON.stringify(macs));
+  localStorage.setItem('simbeam_macs', JSON.stringify(macs));
   renderMacs();
   subscribePresence(); // re-watch with the updated daemon list
 }
@@ -217,7 +217,7 @@ function setupStartPanel() {
   input.value = appSecret;
   document.getElementById('startBtn').onclick = () => {
     appSecret = input.value.trim();
-    localStorage.setItem('simcast_app_secret', appSecret);
+    localStorage.setItem('simbeam_app_secret', appSecret);
     const p = pairing();
     if (p) {
       status.textContent = ' ✓ secret saved — pairing…';
@@ -228,7 +228,7 @@ function setupStartPanel() {
         status.textContent = ' ✓ secret saved — connecting to last Mac…';
         connectRemote(macs[macs.length - 1]);
       } else {
-        status.textContent = ' ✓ secret saved — open a pairing URL (press P in simcastd) to pair a Mac';
+        status.textContent = ' ✓ secret saved — open a pairing URL (press P in simbeamd) to pair a Mac';
       }
     }
   };

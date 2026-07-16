@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kei-sidorov/simcast/internal/companion"
+	"github.com/kei-sidorov/simbeam/internal/companion"
 )
 
 // ctrlReply is a downstream control message: daemon → client over the

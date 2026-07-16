@@ -46,7 +46,7 @@ func New(onControl, onBulk func([]byte), iceServers []webrtc.ICEServer) (*Sessio
 		return nil, err
 	}
 	track, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "simcast")
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "simbeam")
 	if err != nil {
 		_ = pc.Close()
 		return nil, err
