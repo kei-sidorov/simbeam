@@ -146,6 +146,34 @@ func TestHandshakeRelayAndGate(t *testing.T) {
 	}
 }
 
+// TestICEServers_TURNOpenBypassesGate: with TURNOpen the broker hands TURN to a
+// client that has no subscription (temporary open-relay mode); with the gate on
+// (default) the same client gets STUN only.
+func TestICEServers_TURNOpenBypassesGate(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	cfg := Config{
+		STUNURLs:   []string{"stun:x"},
+		TURNURLs:   []string{"turn:relay"},
+		TURNSecret: "secret",
+		Now:        func() time.Time { return now },
+	}
+
+	// Gate on, no store/subscription → STUN only.
+	if ice := New(cfg).iceServers("CLIENTPUB"); len(ice) != 1 {
+		t.Fatalf("gated (no sub) want STUN only, got %d servers", len(ice))
+	}
+
+	// Gate open → STUN + TURN with credentials, no subscription needed.
+	cfg.TURNOpen = true
+	ice := New(cfg).iceServers("CLIENTPUB")
+	if len(ice) != 2 {
+		t.Fatalf("turn-open want STUN+TURN, got %d servers", len(ice))
+	}
+	if ice[1].Username == "" || ice[1].Credential == "" {
+		t.Fatalf("turn-open TURN server missing credentials: %+v", ice[1])
+	}
+}
+
 func TestBadBrokerSigRejected(t *testing.T) {
 	b := New(Config{STUNURLs: []string{"stun:x"}})
 	srv := httptest.NewServer(b.Handler())

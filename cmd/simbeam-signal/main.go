@@ -28,6 +28,7 @@ func main() {
 	turn := flag.String("turn", "", "comma-separated TURN URLs (handed only to active subscribers)")
 	turnSecret := flag.String("turn-secret", "", "coturn static-auth-secret for ephemeral credentials")
 	turnTTL := flag.Duration("turn-ttl", time.Minute, "ephemeral TURN credential lifetime")
+	turnOpen := flag.Bool("turn-open", false, "grant TURN to ALL authenticated clients, bypassing the subscription gate (temporary — use while there are no subscriptions)")
 	db := flag.String("db", "simbeam.db", "SQLite path for the subscriptions store")
 	flag.Parse()
 
@@ -47,6 +48,9 @@ func main() {
 	if appSecret == "" {
 		fmt.Fprintln(os.Stderr, "WARNING: SIMCAST_APP_SECRET is empty — the subscription API app-sig barrier is disabled")
 	}
+	if *turnOpen {
+		fmt.Fprintln(os.Stderr, "WARNING: --turn-open set — TURN relay handed to ALL authenticated clients (subscription gate bypassed)")
+	}
 
 	b := signalbroker.New(signalbroker.Config{
 		STUNURLs:   splitNonEmpty(*stun),
@@ -55,6 +59,7 @@ func main() {
 		TURNTTL:    *turnTTL,
 		Store:      st,
 		AppSecret:  appSecret,
+		TURNOpen:   *turnOpen,
 	})
 
 	fmt.Printf("simbeam-signal listening on %s (ws: /ws, api: /v1/subscription, db: %s)\n", *addr, *db)

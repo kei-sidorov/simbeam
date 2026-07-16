@@ -30,6 +30,7 @@ type Config struct {
 	TURNTTL    time.Duration // ephemeral credential lifetime; 0 → 1 minute
 	Store      store.Store   // subscription gate + /v1/subscription persistence; nil → no TURN, API 503
 	AppSecret  string        // SIMCAST_APP_SECRET: the weak app-sig barrier on the subscription API
+	TURNOpen   bool          // TEMP: hand TURN to every authenticated client, bypassing the subscription gate (use while there are no subscriptions yet)
 	Now        func() time.Time
 }
 
@@ -100,12 +101,19 @@ func (b *Broker) Handler() http.Handler {
 func (b *Broker) iceServers(clientPubKey string) []signal.ICEServer {
 	out := []signal.ICEServer{{URLs: b.cfg.STUNURLs}}
 	granted := false
-	if b.cfg.Store != nil && len(b.cfg.TURNURLs) > 0 {
-		ok, err := b.cfg.Store.Active(context.Background(), clientPubKey, b.cfg.Now())
-		if err != nil {
-			log.Printf("signalbroker: subscription gate lookup failed: %v", err)
+	if len(b.cfg.TURNURLs) > 0 {
+		switch {
+		case b.cfg.TURNOpen:
+			// Subscription gate disabled: hand TURN to every authenticated client.
+			// Temporary — flip off once real subscriptions gate relay access.
+			granted = true
+		case b.cfg.Store != nil:
+			ok, err := b.cfg.Store.Active(context.Background(), clientPubKey, b.cfg.Now())
+			if err != nil {
+				log.Printf("signalbroker: subscription gate lookup failed: %v", err)
+			}
+			granted = err == nil && ok
 		}
-		granted = err == nil && ok
 	}
 	if granted {
 		cred := signal.MakeTURNCredential(b.cfg.TURNSecret, clientPubKey, b.cfg.Now(), b.cfg.TURNTTL)
