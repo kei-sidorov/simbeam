@@ -31,6 +31,7 @@ import (
 	"github.com/kei-sidorov/simbeam/internal/server"
 	"github.com/kei-sidorov/simbeam/internal/signal"
 	"github.com/mdp/qrterminal/v3"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -288,33 +289,49 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Banner while the terminal is still cooked, so its plain "\n" land at column 0.
-	fmt.Printf("simbeamd remote mode — broker: %s\n", signalURL)
-	fmt.Printf("daemonID: %s\n", id.PubB64)
-	fmt.Println("Press P to pair a new device, C to cancel an open window, Q to quit.")
-
-	// Own the terminal's raw mode on this (main) goroutine so its restore is
-	// deterministic — it runs when runRemote returns, before the process exits —
-	// rather than racing from the key goroutine's defer. A signal watcher restores
-	// it on kill / terminal-close too; without that a non-clean exit leaves the tty
-	// raw and the *next* run's banner staircases (bare "\n" no longer returns to
-	// column 0). watchKeys now only reads the keystrokes this raw mode enables.
+	// Take the terminal into a KNOWN state before printing anything, then print the
+	// banner with explicit CRLF. A tty's line discipline is a property of the device,
+	// not of us: a prior process that went raw (term.MakeRaw disables OPOST) and died
+	// without restoring — kill -9, log.Fatal/os.Exit, a crash — leaves OPOST off on the
+	// device we inherit. Printing the banner while *assuming* a cooked tty is exactly
+	// the bug: a bare "\n" then moves the cursor down but not to column 0, so every line
+	// staircases rightward regardless of who broke it. So force a known raw state, emit
+	// the banner through a CRLF writer ourselves, and on the way out restore a *sane
+	// cooked* state — derived from what we inherited but with the cooked flags forced
+	// back on — so the shell we hand back to is never left wedged even if the tty
+	// reached us already-raw. A signal watcher runs the same restore on kill /
+	// terminal-close. watchKeys now only reads the keystrokes this raw mode enables.
+	// Decision #99 (supersedes #98).
+	bannerW := io.Writer(os.Stdout)
 	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
-		if old, merr := term.MakeRaw(fd); merr == nil {
-			restoreLog := installRawModeLogWriter()
-			var once sync.Once
-			restore := func() { once.Do(func() { restoreLog(); term.Restore(fd, old) }) }
-			defer restore()
+		if before, gerr := unix.IoctlGetTermios(fd, unix.TIOCGETA); gerr == nil {
+			if _, merr := term.MakeRaw(fd); merr == nil {
+				restoreLog := installRawModeLogWriter()
+				bannerW = &crlfWriter{w: os.Stdout}
+				sane := saneRestoreTermios(*before)
+				var once sync.Once
+				restore := func() {
+					once.Do(func() {
+						restoreLog()
+						unix.IoctlSetTermios(fd, unix.TIOCSETA, &sane)
+					})
+				}
+				defer restore()
 
-			sigCh := make(chan os.Signal, 1)
-			ossignal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-			go func() {
-				<-sigCh
-				restore()
-				os.Exit(130)
-			}()
+				sigCh := make(chan os.Signal, 1)
+				ossignal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+				go func() {
+					<-sigCh
+					restore()
+					os.Exit(130)
+				}()
+			}
 		}
 	}
+
+	fmt.Fprintf(bannerW, "simbeamd remote mode — broker: %s\n", signalURL)
+	fmt.Fprintf(bannerW, "daemonID: %s\n", id.PubB64)
+	fmt.Fprintln(bannerW, "Press P to pair a new device, C to cancel an open window, Q to quit.")
 
 	ui := &pairUI{}
 
@@ -370,6 +387,20 @@ func printPairingQR(w io.Writer, url string) {
 		WhiteBlackChar: qrterminal.WHITE_BLACK,
 		QuietZone:      1,
 	})
+}
+
+// saneRestoreTermios derives a cooked terminal state from whatever we inherited,
+// forcing back the flags a shell needs — output post-processing (OPOST/ONLCR so
+// "\n" returns the cursor to column 0), canonical input with echo (ICANON/ECHO),
+// signal keys (ISIG), and CR→NL on input (ICRNL, so Enter works). Restoring this
+// instead of the raw snapshot we may have inherited guarantees the terminal we
+// hand back is usable even if a prior process left it raw.
+func saneRestoreTermios(before unix.Termios) unix.Termios {
+	t := before
+	t.Oflag |= unix.OPOST | unix.ONLCR
+	t.Lflag |= unix.ICANON | unix.ECHO | unix.ISIG | unix.IEXTEN
+	t.Iflag |= unix.ICRNL
+	return t
 }
 
 // installRawModeLogWriter routes the standard logger through crlfWriter for as

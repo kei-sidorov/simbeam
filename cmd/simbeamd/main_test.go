@@ -5,6 +5,8 @@ import (
 	"log"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestRawModeLogWriterAddsCRLF pins the staircase fix: while the terminal is in
@@ -35,5 +37,33 @@ func TestRawModeLogWriterAddsCRLF(t *testing.T) {
 	log.Print("x\ny")
 	if strings.Contains(buf.String(), "\r") {
 		t.Fatalf("wrapper leaked past restore: %q", buf.String())
+	}
+}
+
+// TestSaneRestoreTermiosHealsInheritedRaw pins the second half of the staircase
+// fix: even when runRemote inherits a tty that a prior process left raw (OPOST /
+// ICANON / ECHO cleared), the state we restore on exit must re-enable the cooked
+// flags — otherwise a kill -9'd predecessor would wedge the shell we hand back to,
+// and the *next* run's banner (and the shell prompt) would staircase again.
+func TestSaneRestoreTermiosHealsInheritedRaw(t *testing.T) {
+	var rawInherited unix.Termios // zero value: all flags cleared == fully raw
+	sane := saneRestoreTermios(rawInherited)
+
+	cases := []struct {
+		name string
+		flag uint64
+		got  uint64
+	}{
+		{"OPOST", unix.OPOST, uint64(sane.Oflag)},
+		{"ONLCR", unix.ONLCR, uint64(sane.Oflag)},
+		{"ICANON", unix.ICANON, uint64(sane.Lflag)},
+		{"ECHO", unix.ECHO, uint64(sane.Lflag)},
+		{"ISIG", unix.ISIG, uint64(sane.Lflag)},
+		{"ICRNL", unix.ICRNL, uint64(sane.Iflag)},
+	}
+	for _, c := range cases {
+		if c.got&c.flag == 0 {
+			t.Errorf("restore state missing %s: cooked handoff not guaranteed", c.name)
+		}
 	}
 }
