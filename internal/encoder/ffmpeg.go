@@ -5,12 +5,21 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// encodeStats gates the once-a-second frames-in-flight log (framesIn = PNGs fed
+// to ffmpeg stdin, framesOut = access units emitted; the difference is what sits
+// inside ffmpeg). This is the send-side instrumentation from
+// docs/research/2026-06-08-latency-pipeline.md («Методика», п.3), kept behind an
+// env var so latency work can re-measure without patching the encoder again.
+var encodeStats = os.Getenv("SIMBEAM_ENCODER_STATS") != ""
 
 // encoderName returns the H.264 encoder for this platform: hardware
 // videotoolbox on macOS (the sim backend's home), software x264 everywhere else
@@ -123,6 +132,23 @@ func Encode(ctx context.Context, png <-chan []byte, fps int, scale float64, bitr
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
+	var framesIn, framesOut atomic.Int64
+	if encodeStats {
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					in, out := framesIn.Load(), framesOut.Load()
+					log.Printf("encoder: stats in=%d out=%d in-flight=%d", in, out, in-out)
+				}
+			}
+		}()
+	}
+
 	// Feed PNG frames into ffmpeg stdin.
 	go func() {
 		defer stdin.Close()
@@ -137,6 +163,7 @@ func Encode(ctx context.Context, png <-chan []byte, fps int, scale float64, bitr
 				if _, err := stdin.Write(frame); err != nil {
 					return
 				}
+				framesIn.Add(1)
 			}
 		}
 	}()
@@ -163,6 +190,7 @@ func Encode(ctx context.Context, png <-chan []byte, fps int, scale float64, bitr
 					}
 					select {
 					case frames <- Frame{Data: au, Duration: dur}:
+						framesOut.Add(1)
 					case <-ctx.Done():
 						return
 					}
