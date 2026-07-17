@@ -1,6 +1,9 @@
 package server
 
-import "context"
+import (
+	"context"
+	"log"
+)
 
 // attachment is one live video feed produced by the backend and pumped into the
 // session's video track. Exactly one attachment exists per session at a time.
@@ -43,10 +46,14 @@ func (d *rtcDispatch) doAttach(udid string, q QualityOpts) {
 // time a detach can have come and gone — the goroutine then finds the generation
 // it just took still current and installs a feed the client already dismissed.
 func (d *rtcDispatch) attachAs(udid string, q QualityOpts, gen uint64) {
+	log.Printf("attach %s: starting", udid)
 	ctx, cancel := context.WithCancel(d.baseCtx)
 	feed, err := d.backend.Attach(ctx, udid, q)
 	if err != nil {
 		cancel()
+		// The client gets this as an error reply, but its rendering is the
+		// client's business — the daemon log must not depend on it.
+		log.Printf("attach %s: %v", udid, err)
 		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
 		return
 	}
@@ -72,6 +79,9 @@ func (d *rtcDispatch) attachAs(udid string, q QualityOpts, gen uint64) {
 	go func() {
 		for f := range feed.Frames() {
 			if err := d.writeFrame(f.Data, f.Duration); err != nil {
+				// A write error ends the feed for the client, who only ever sees
+				// a frozen/black track — this line is the sole trace of why.
+				log.Printf("attach %s: video pump stopped: %v", udid, err)
 				break
 			}
 		}
@@ -92,6 +102,7 @@ func (d *rtcDispatch) attachAs(udid string, q QualityOpts, gen uint64) {
 	}()
 
 	w, h := feed.Screen()
+	log.Printf("attach %s: live (%dx%d)", udid, w, h)
 	d.reply(ctrlReply{Type: "attached", W: w, H: h})
 }
 

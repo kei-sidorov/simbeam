@@ -162,6 +162,13 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 		}
 		switch m.Type {
 		case signal.TypeConnect:
+			// The displacement below is invisible to the displaced client (its
+			// session just dies) and used to be invisible in this log too, which
+			// made every churn-triggered teardown look like a daemon bug. One
+			// line names the killer: who joined, and whether a live session paid.
+			if sess != nil {
+				log.Printf("signal: new join from %.12s… displaces live session of %.12s…", m.PubKey, authPub)
+			}
 			cleanup() // drop any prior client
 			allow, enr := false, false
 			var code string
@@ -244,6 +251,9 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 			}
 			_ = send(signedAnswer(answerSDP, id.Priv))
 		case signal.TypePeerLeft:
+			if sess != nil {
+				log.Printf("signal: peerLeft from broker — tearing down live session of %.12s…", authPub)
+			}
 			cleanup()
 		}
 	}
