@@ -160,7 +160,7 @@ func TestPlayoutDelayInterceptorStamps(t *testing.T) {
 	pd := &playoutDelay{}
 
 	video := &interceptor.StreamInfo{
-		MimeType: "video/H264",
+		MimeType:            "video/H264",
 		RTPHeaderExtensions: []interceptor.RTPHeaderExtension{{URI: playoutDelayURI, ID: 5}},
 	}
 	w := pd.BindLocalStream(video, sink)
@@ -183,7 +183,7 @@ func TestPlayoutDelayInterceptorStamps(t *testing.T) {
 	}
 
 	audio := &interceptor.StreamInfo{
-		MimeType: "audio/opus",
+		MimeType:            "audio/opus",
 		RTPHeaderExtensions: []interceptor.RTPHeaderExtension{{URI: playoutDelayURI, ID: 5}},
 	}
 	got = nil
