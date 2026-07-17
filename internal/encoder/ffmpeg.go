@@ -76,6 +76,17 @@ func ffmpegArgs(fps int, scale float64, bitrate int) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "warning",
 		"-fflags", "nobuffer", "-flags", "low_delay", "-analyzeduration", "0",
+		// -threads 1 MUST sit before -i: it is an input option pinning the PNG
+		// *decoder* to one thread. The PNG decoder is frame-threaded, and at auto
+		// thread count the decode pipeline holds ~N-1 frames of pure latency
+		// (~800ms at 15fps on 12 cores) — UNLESS low_delay is set on the decoder,
+		// which `-flags low_delay` above already does, so today this is a
+		// belt-and-suspenders: measured effect ≈0, but it keeps the decoder
+		// latency-free even if the flags line is ever touched, and drops 11 idle
+		// decoder threads (docs/research/2026-06-08-latency-pipeline.md, секция
+		// 2026-07-17). Single-threaded PNG decode is milliseconds against the
+		// 66.7ms frame budget, so throughput is unaffected.
+		"-threads", "1",
 		"-f", "image2pipe", "-vcodec", "png", "-framerate", strconv.Itoa(fps), "-i", "pipe:0",
 		"-an",
 	}

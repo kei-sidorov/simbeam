@@ -35,6 +35,29 @@ func TestFFmpegArgsGOPCoupling(t *testing.T) {
 	}
 }
 
+// -threads 1 must be an INPUT option (before -i pipe:0): it pins the
+// frame-threaded PNG decoder to one thread, killing its ~N-1 frames of
+// pipeline latency. After -i it would land on the encoder instead and the
+// decoder would silently go back to auto threads.
+func TestFFmpegArgsInputDecoderSingleThreaded(t *testing.T) {
+	args := ffmpegArgs(15, 0.5, 8_000_000)
+	threads, input := -1, -1
+	for i, a := range args {
+		if a == "-threads" && threads == -1 {
+			threads = i
+		}
+		if a == "-i" && input == -1 {
+			input = i
+		}
+	}
+	if threads == -1 || args[threads+1] != "1" {
+		t.Fatalf("missing -threads 1 in: %v", args)
+	}
+	if input == -1 || threads > input {
+		t.Fatalf("-threads 1 must precede -i (input option), got: %v", args)
+	}
+}
+
 func TestAvailableSkipIfMissing(t *testing.T) {
 	if err := Available(); err != nil {
 		t.Skipf("ffmpeg/h264_videotoolbox not available: %v", err)
