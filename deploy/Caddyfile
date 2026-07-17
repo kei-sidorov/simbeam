@@ -1,6 +1,7 @@
 # Reverse-proxy the signalling broker behind automatic HTTPS (Let's Encrypt).
-# Replace signal.example.com with your domain. Pairing URLs use wss://<domain>/ws.
-# Caddy upgrades WebSocket connections transparently.
-signal.example.com {
+# signal.simbeam.dev is the project's broker host; replace it with your own domain
+# when self-hosting. Pairing URLs use wss://<domain>/ws. Caddy upgrades WebSocket
+# connections transparently.
+signal.simbeam.dev {
 	reverse_proxy 127.0.0.1:9000
 }

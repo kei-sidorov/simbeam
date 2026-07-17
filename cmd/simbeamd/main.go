@@ -42,6 +42,12 @@ var version = "dev"
 // nothing server-side is needed beyond this broker.
 var defaultSignalURL = ""
 
+// defaultClientURL is the hosted web client's base URL, baked in at build time
+// alongside defaultSignalURL. Pairing links point here so a distributed binary
+// prints a URL the client (iPad/browser) can actually open. Empty in the
+// open-core repo → pairing falls back to http://localhost<addr>/ (local dev).
+var defaultClientURL = ""
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -125,7 +131,7 @@ func runServe(argv []string) error {
 	addr := fs.String("addr", ":8080", "listen address")
 	webDir := fs.String("web", "", "directory with debug client (served at /); empty = API only")
 	signalURL := fs.String("signal", defaultSignalURL, "remote rendezvous: signaling broker WS URL (e.g. wss://host/ws); empty = local-only")
-	clientURL := fs.String("client-url", "", "base URL of the browser debug client for the pairing link; empty = http://localhost<addr>/")
+	clientURL := fs.String("client-url", defaultClientURL, "base URL of the web client for the pairing link; empty = http://localhost<addr>/")
 	identityPath := fs.String("identity", defaultStatePath("identity.key"), "path to the daemon's persistent Ed25519 identity")
 	clientsPath := fs.String("clients", defaultStatePath("clients.json"), "path to the pinned-clients store")
 	pairTTL := fs.Duration("pair-ttl", 5*time.Minute, "how long an enrollment window stays open after pressing P")
@@ -167,7 +173,7 @@ func runDemo(argv []string) error {
 	name := fs.String("name", "simbeam demo", "device/host name shown in the client")
 	addr := fs.String("addr", ":8080", "listen address for the local debug client (only with --web)")
 	webDir := fs.String("web", "", "directory with the browser debug client (served at /); empty = none")
-	clientURL := fs.String("client-url", "", "base URL of the client for the pairing link; empty = http://localhost<addr>/")
+	clientURL := fs.String("client-url", defaultClientURL, "base URL of the client for the pairing link; empty = http://localhost<addr>/")
 	identityPath := fs.String("identity", defaultStatePath("demo-identity.key"), "path to the demo daemon's persistent Ed25519 identity")
 	clientsPath := fs.String("clients", defaultStatePath("demo-clients.json"), "path to the pinned-clients store")
 	pairSecret := fs.String("pair-secret", "", "fixed pairing secret; empty = $SIMCAST_PAIR_SECRET, else generated per run")

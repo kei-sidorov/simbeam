@@ -13,7 +13,7 @@ builds:
     # Bake the broker so `simbeamd serve` needs no flags. Pairing carries the rest
     # in the URL; no page/Caddy hosting required.
     ldflags:
-      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simbeam.sidorov.tech/ws
+      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://signal.simbeam.dev/ws -X main.defaultClientURL=https://app.simbeam.dev/
   # Linux build of the same daemon: runs `simbeamd demo` (headless-browser demo
   # device) on a VPS. Separate build/archive id so the Homebrew cask below keeps
   # picking up only the darwin archives.
@@ -25,7 +25,7 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags:
-      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://simbeam.sidorov.tech/ws
+      - -s -w -X main.version={{ .Version }} -X main.defaultSignalURL=wss://signal.simbeam.dev/ws -X main.defaultClientURL=https://app.simbeam.dev/
   - id: simbeam-signal
     main: ./cmd/simbeam-signal
     binary: simbeam-signal

@@ -4,7 +4,7 @@ export PATH := $(GOBIN):$(PATH)
 .PHONY: proto build run run-remote test
 
 # Broker baked into local remote-mode runs; override: make run-remote BROKER=wss://host/ws
-BROKER ?= wss://simbeam.sidorov.tech/ws
+BROKER ?= wss://signal.simbeam.dev/ws
 
 proto:
 	mkdir -p internal/idbpb
