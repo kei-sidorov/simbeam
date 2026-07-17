@@ -6,12 +6,61 @@ package rtc
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/pion/interceptor"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
+
+// playoutDelayURI is the RTP header extension telling libwebrtc receivers how
+// long they may hold frames before rendering. With min=max=0 a stock receiver
+// (browser, iOS client) collapses its adaptive jitter buffer to
+// render-right-after-decode — the right trade for interactive remote control,
+// where a late frame is worse than a dropped one. The client's offer already
+// announces the extension; the sender only has to negotiate and stamp it.
+const playoutDelayURI = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"
+
+// playoutDelayZero is the extension payload for min=0/max=0: 12 bits min +
+// 12 bits max, both in 10ms units (draft-alvestrand-rmcat-remb / WebRTC
+// playout-delay spec), so zero delay is three zero bytes.
+var playoutDelayZero = []byte{0, 0, 0}
+
+// playoutDelay stamps the playout-delay extension on every outgoing video RTP
+// packet of streams that negotiated it. pion/interceptor v0.1.45 ships no
+// ready-made playout-delay interceptor (checked: cc/gcc/nack/report/twcc/…),
+// hence this one. The negotiated id comes from StreamInfo — if the remote did
+// not negotiate the extension (or the stream is not video), the writer is
+// returned untouched and no packet is modified.
+type playoutDelay struct{ interceptor.NoOp }
+
+func (p *playoutDelay) BindLocalStream(info *interceptor.StreamInfo, writer interceptor.RTPWriter) interceptor.RTPWriter {
+	var id uint8
+	for _, e := range info.RTPHeaderExtensions {
+		if e.URI == playoutDelayURI {
+			id = uint8(e.ID)
+		}
+	}
+	if id == 0 || !strings.HasPrefix(info.MimeType, "video/") {
+		return writer
+	}
+	return interceptor.RTPWriterFunc(func(header *rtp.Header, payload []byte, attributes interceptor.Attributes) (int, error) {
+		if err := header.SetExtension(id, playoutDelayZero); err != nil {
+			return 0, err
+		}
+		return writer.Write(header, payload, attributes)
+	})
+}
+
+// playoutDelayFactory satisfies interceptor.Factory.
+type playoutDelayFactory struct{}
+
+func (playoutDelayFactory) NewInterceptor(string) (interceptor.Interceptor, error) {
+	return &playoutDelay{}, nil
+}
 
 // ErrNoControlChannel is returned by Send before the remote peer has opened
 // the "control" DataChannel.
@@ -41,7 +90,25 @@ type Session struct {
 // candidates only (localhost dev); STUN/TURN entries enable srflx/relay for
 // remote rendezvous.
 func New(onControl, onBulk func([]byte), iceServers []webrtc.ICEServer) (*Session, error) {
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: iceServers})
+	// Explicit MediaEngine instead of the webrtc.NewPeerConnection default:
+	// that is the only way to negotiate a header extension. Default codecs and
+	// default interceptors (NACK, RTCP reports, TWCC) are registered exactly as
+	// the stock constructor would, plus playout-delay for video.
+	m := &webrtc.MediaEngine{}
+	if err := m.RegisterDefaultCodecs(); err != nil {
+		return nil, err
+	}
+	if err := m.RegisterHeaderExtension(
+		webrtc.RTPHeaderExtensionCapability{URI: playoutDelayURI}, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, err
+	}
+	ir := &interceptor.Registry{}
+	if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
+		return nil, err
+	}
+	ir.Add(playoutDelayFactory{})
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir))
+	pc, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: iceServers})
 	if err != nil {
 		return nil, err
 	}
