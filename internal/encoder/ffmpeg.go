@@ -112,6 +112,32 @@ func ffmpegArgs(fps int, scale float64, bitrate int) []string {
 	)
 }
 
+// frameTimer turns AU emission instants into per-frame Durations for the RTP
+// clock. The fixed 1/fps the encoder used to report runs ~9% slow against
+// reality (one Screenshot RPC costs 71.5–73.9ms vs the 66.7ms tick), so the
+// receiver saw a drifting RTP clock plus arrival jitter and inflated its
+// jitter buffer. The first frame gets the nominal 1/fps (there is no previous
+// emission to measure against); every later frame gets the measured gap to its
+// predecessor on the monotonic clock, floored at 1ms so RTP timestamps stay
+// strictly monotonic even when a startup backlog drains in one burst. Fresh
+// feed = fresh Encode call = fresh timer, so no interval ever spans a
+// quality-change/reconnect boundary.
+type frameTimer struct {
+	nominal time.Duration
+	last    time.Time
+}
+
+func (t *frameTimer) next(now time.Time) time.Duration {
+	d := t.nominal
+	if !t.last.IsZero() {
+		if d = now.Sub(t.last); d < time.Millisecond {
+			d = time.Millisecond
+		}
+	}
+	t.last = now
+	return d
+}
+
 // Encode spawns ffmpeg, feeds PNG frames from png to its stdin, and emits one
 // Frame per H.264 access unit on the returned channel until ctx is cancelled
 // (then the channel closes and ffmpeg is killed via the command context).
@@ -180,7 +206,7 @@ func Encode(ctx context.Context, png <-chan []byte, fps int, scale float64, bitr
 	}()
 
 	frames := make(chan Frame)
-	dur := time.Second / time.Duration(fps)
+	ft := frameTimer{nominal: time.Second / time.Duration(fps)}
 	go func() {
 		defer close(frames)
 		defer cmd.Wait()
@@ -200,7 +226,7 @@ func Encode(ctx context.Context, png <-chan []byte, fps int, scale float64, bitr
 						continue
 					}
 					select {
-					case frames <- Frame{Data: au, Duration: dur}:
+					case frames <- Frame{Data: au, Duration: ft.next(time.Now())}:
 						framesOut.Add(1)
 					case <-ctx.Done():
 						return

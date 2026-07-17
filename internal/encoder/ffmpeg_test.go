@@ -3,6 +3,7 @@ package encoder
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFFmpegArgs(t *testing.T) {
@@ -55,6 +56,47 @@ func TestFFmpegArgsInputDecoderSingleThreaded(t *testing.T) {
 	}
 	if input == -1 || threads > input {
 		t.Fatalf("-threads 1 must precede -i (input option), got: %v", args)
+	}
+}
+
+// The first frame has no predecessor to measure against, so it gets the
+// nominal 1/fps; every later frame gets the real gap between emissions —
+// that is what keeps the RTP clock tracking wall time when capture runs
+// slower than the tick (71.5–73.9ms RPC vs 66.7ms).
+func TestFrameTimerMeasuresRealIntervals(t *testing.T) {
+	ft := frameTimer{nominal: time.Second / 15}
+	base := time.Now()
+	if d := ft.next(base); d != time.Second/15 {
+		t.Fatalf("first frame: want nominal %v, got %v", time.Second/15, d)
+	}
+	if d := ft.next(base.Add(73 * time.Millisecond)); d != 73*time.Millisecond {
+		t.Fatalf("second frame: want measured 73ms, got %v", d)
+	}
+	if d := ft.next(base.Add(73*time.Millisecond + 66*time.Millisecond)); d != 66*time.Millisecond {
+		t.Fatalf("third frame: want measured 66ms, got %v", d)
+	}
+}
+
+// A startup backlog drains in one burst: emissions microseconds apart must
+// still advance the RTP timestamp (floor 1ms), never stall or run backwards.
+func TestFrameTimerFloorsBurstIntervals(t *testing.T) {
+	ft := frameTimer{nominal: time.Second / 15}
+	base := time.Now()
+	ft.next(base)
+	if d := ft.next(base.Add(10 * time.Microsecond)); d != time.Millisecond {
+		t.Fatalf("burst frame: want 1ms floor, got %v", d)
+	}
+}
+
+// A fresh timer (= fresh Encode call = fresh feed after quality change or
+// reconnect) starts over from the nominal duration: no interval is carried
+// across a feed boundary.
+func TestFrameTimerFreshFeedResets(t *testing.T) {
+	old := frameTimer{nominal: time.Second / 15}
+	old.next(time.Now().Add(-time.Hour)) // stale feed emitted long ago
+	fresh := frameTimer{nominal: time.Second / 15}
+	if d := fresh.next(time.Now()); d != time.Second/15 {
+		t.Fatalf("fresh feed first frame: want nominal, got %v", d)
 	}
 }
 
