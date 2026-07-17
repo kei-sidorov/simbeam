@@ -364,6 +364,40 @@ func TestReconnectByDaemonID(t *testing.T) {
 	}
 }
 
+// TestServeSignalReturnsOnCancelWhileConnected reproduces the Ctrl-C hang: while
+// the daemon is connected to the broker and parked in ws.ReadJSON (no messages
+// pending), cancelling ctx must make ServeSignal return promptly. Before the fix
+// the blocked read ignored ctx, so quitting hung until the connection dropped.
+func TestServeSignalReturnsOnCancelWhileConnected(t *testing.T) {
+	wsURL := brokerFixture(t, signalbroker.Config{})
+
+	pub, priv, _ := signal.GenerateKeyPair()
+	id := Identity{PubB64: pub, Priv: priv}
+
+	clientPub, clientPriv, _ := signal.GenerateKeyPair()
+	pinned, _ := LoadPinnedStore(t.TempDir() + "/clients.json")
+	_ = pinned.Add(clientPub, "iPad") // already enrolled: join without a secret
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	dsrv := New(&stubComp{}, "")
+	done := make(chan error, 1)
+	go func() { done <- dsrv.ServeSignal(ctx, wsURL, id, pinned, NewPairingWindow()) }()
+
+	// Gate on the daemon actually being registered — so serveOnce is now blocked
+	// in the read loop, not still dialing (which has its own ctx-aware path).
+	ws, _ := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
+	t.Cleanup(func() { _ = ws.Close() })
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeSignal did not return within 2s of ctx cancel while connected — Ctrl-C would hang")
+	}
+}
+
 // TestUnpinnedClientRejected: with the window closed, a client the daemon has not
 // pinned is refused (peer-pinning: the daemon decides access, not the broker).
 func TestUnpinnedClientRejected(t *testing.T) {

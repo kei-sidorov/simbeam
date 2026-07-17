@@ -117,6 +117,17 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 	}
 	defer ws.Close()
 
+	// A blocked ws.ReadJSON below ignores ctx, so on cancellation (Ctrl-C/quit,
+	// or a parent-scoped shutdown) close the conn to force the read to err out and
+	// let serveOnce/ServeSignal return. connCancel fires on normal return too, so
+	// the watcher goroutine never outlives this connection.
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel()
+	go func() {
+		<-connCtx.Done()
+		ws.Close()
+	}()
+
 	var wmu sync.Mutex
 	send := func(m signal.Msg) error { wmu.Lock(); defer wmu.Unlock(); return ws.WriteJSON(m) }
 
