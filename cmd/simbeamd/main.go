@@ -17,9 +17,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	ossignal "os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -286,9 +288,33 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Banner while the terminal is still cooked, so its plain "\n" land at column 0.
 	fmt.Printf("simbeamd remote mode — broker: %s\n", signalURL)
 	fmt.Printf("daemonID: %s\n", id.PubB64)
 	fmt.Println("Press P to pair a new device, C to cancel an open window, Q to quit.")
+
+	// Own the terminal's raw mode on this (main) goroutine so its restore is
+	// deterministic — it runs when runRemote returns, before the process exits —
+	// rather than racing from the key goroutine's defer. A signal watcher restores
+	// it on kill / terminal-close too; without that a non-clean exit leaves the tty
+	// raw and the *next* run's banner staircases (bare "\n" no longer returns to
+	// column 0). watchKeys now only reads the keystrokes this raw mode enables.
+	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+		if old, merr := term.MakeRaw(fd); merr == nil {
+			restoreLog := installRawModeLogWriter()
+			var once sync.Once
+			restore := func() { once.Do(func() { restoreLog(); term.Restore(fd, old) }) }
+			defer restore()
+
+			sigCh := make(chan os.Signal, 1)
+			ossignal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+			go func() {
+				<-sigCh
+				restore()
+				os.Exit(130)
+			}()
+		}
+	}
 
 	ui := &pairUI{}
 
@@ -439,20 +465,13 @@ func (u *pairUI) retire(status string) {
 
 // watchKeys reads single keystrokes from a terminal: P opens a pairing window,
 // C cancels an open one, Q/Ctrl-C quits. If stdin is not a TTY (piped/tests), it
-// just blocks on ctx.
+// just blocks on ctx. Raw mode (and its restore) is owned by runRemote, so a
+// non-clean exit can't leave the terminal wedged; here we only read.
 func watchKeys(ctx context.Context, cancel context.CancelFunc, onPair, onCancel func()) {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		<-ctx.Done()
 		return
 	}
-	old, err := term.MakeRaw(fd)
-	if err != nil {
-		<-ctx.Done()
-		return
-	}
-	defer term.Restore(fd, old)
-	defer installRawModeLogWriter()()
 
 	buf := make([]byte, 1)
 	for {
