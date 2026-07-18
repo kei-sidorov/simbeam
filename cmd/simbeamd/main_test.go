@@ -40,6 +40,35 @@ func TestRawModeLogWriterAddsCRLF(t *testing.T) {
 	}
 }
 
+// TestPairSignalArg pins when the broker is dropped from the pairing URL: only
+// when the build opted in (omitSignalInPairURL baked) AND the daemon is actually
+// on the baked default broker. A --signal override to a different broker must
+// still be printed, or the client would silently pair against the wrong one.
+func TestPairSignalArg(t *testing.T) {
+	const baked = "wss://signal.simbeam.dev/ws"
+	savedOmit, savedDefault := omitSignalInPairURL, defaultSignalURL
+	t.Cleanup(func() { omitSignalInPairURL, defaultSignalURL = savedOmit, savedDefault })
+	defaultSignalURL = baked
+
+	cases := []struct {
+		name      string
+		omit      string
+		signalURL string
+		want      string
+	}{
+		{"not baked → keep", "", baked, baked},
+		{"baked + default broker → drop", "1", baked, ""},
+		{"baked + overridden broker → keep", "1", "wss://other.example/ws", "wss://other.example/ws"},
+		{"not baked + custom broker → keep", "", "wss://localhost:9000/ws", "wss://localhost:9000/ws"},
+	}
+	for _, c := range cases {
+		omitSignalInPairURL = c.omit
+		if got := pairSignalArg(c.signalURL); got != c.want {
+			t.Errorf("%s: pairSignalArg(%q) = %q, want %q", c.name, c.signalURL, got, c.want)
+		}
+	}
+}
+
 // TestSaneRestoreTermiosHealsInheritedRaw pins the second half of the staircase
 // fix: even when runRemote inherits a tty that a prior process left raw (OPOST /
 // ICANON / ECHO cleared), the state we restore on exit must re-enable the cooked

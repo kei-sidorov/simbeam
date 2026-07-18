@@ -134,14 +134,21 @@ https://<client-app>/#signal=<wss-broker-url>&daemon=<daemonID>&pair=<S>
 
 | Parameter | Meaning |
 |-----------|---------|
-| `signal`  | the broker's WebSocket URL to dial |
+| `signal`  | the broker's WebSocket URL to dial — **optional** (see below) |
 | `daemon`  | the daemon's public key (`daemonID`) — the client **pins** this as the real Mac |
 | `pair`    | the one-time secret `S` |
 
+`signal` is omitted from released daemons' pairing URLs: the hosted client
+(`app.simbeam.dev`) already knows its default broker (`wss://signal.simbeam.dev/ws`),
+so repeating it only lengthens the URL and its QR. A daemon prints `signal` only when
+it talks to a *different* broker (local dev, self-hosted) — so the client always
+learns a broker it wouldn't otherwise assume. Absent `signal` ⇒ client uses its
+baked default.
+
 ### What the client does with it
 
-The client scans the QR (or opens the URL) and reads `signal`, `daemon`, `pair` from the
-fragment. It then:
+The client scans the QR (or opens the URL) and reads `signal` (falling back to its
+default broker when absent), `daemon`, and `pair` from the fragment. It then:
 
 1. Generates **its own** permanent keypair (Ed25519) if it doesn't already have one. Its public
    key is `clientPubKey`.

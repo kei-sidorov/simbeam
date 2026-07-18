@@ -51,6 +51,28 @@ var defaultSignalURL = ""
 // open-core repo → pairing falls back to http://localhost<addr>/ (local dev).
 var defaultClientURL = ""
 
+// omitSignalInPairURL, when baked truthy (-X main.omitSignalInPairURL=1 in the
+// release build), tells the daemon to leave the broker WS URL out of the pairing
+// link: the hosted client at defaultClientURL already knows its default broker,
+// so repeating it just lengthens the URL and its QR. -X can only set strings, so
+// this is a string treated as a boolean ("" = keep signal, anything else = omit).
+// Empty in the open-core / dev build → the full URL is printed (localhost and
+// custom brokers still pair).
+var omitSignalInPairURL = ""
+
+// pairSignalArg returns the value to pass as PairingURL's signalingURL: "" to omit
+// the broker from the pairing link, or signalURL to keep it. It omits only when the
+// build opted in AND the daemon is actually talking to the baked default broker —
+// so a release binary launched with --signal pointing at a *different* broker still
+// prints it, rather than silently sending the client to the default one.
+func pairSignalArg(signalURL string) string {
+	omit := omitSignalInPairURL != "" && signalURL == defaultSignalURL
+	if omit {
+		return ""
+	}
+	return signalURL
+}
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -243,7 +265,7 @@ func runDemo(argv []string) error {
 		}()
 	}
 
-	pairURL := signal.PairingURL(base, *signalURL, id.PubB64, secret)
+	pairURL := signal.PairingURL(base, pairSignalArg(*signalURL), id.PubB64, secret)
 	fmt.Printf("simbeamd demo mode — broker: %s\n", *signalURL)
 	fmt.Printf("daemonID: %s\n", id.PubB64)
 	fmt.Printf("demo page: %s\n", *demoURL)
@@ -304,7 +326,7 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 	// Decision #99 (supersedes #98).
 	bannerW := io.Writer(os.Stdout)
 	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
-		if before, gerr := unix.IoctlGetTermios(fd, unix.TIOCGETA); gerr == nil {
+		if before, gerr := unix.IoctlGetTermios(fd, ioctlGetTermios); gerr == nil {
 			if _, merr := term.MakeRaw(fd); merr == nil {
 				restoreLog := installRawModeLogWriter()
 				bannerW = &crlfWriter{w: os.Stdout}
@@ -313,7 +335,7 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 				restore := func() {
 					once.Do(func() {
 						restoreLog()
-						unix.IoctlSetTermios(fd, unix.TIOCSETA, &sane)
+						unix.IoctlSetTermios(fd, ioctlSetTermios, &sane)
 					})
 				}
 				defer restore()
@@ -342,7 +364,7 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 			return
 		}
 		win.Open(secret, time.Now(), pairTTL)
-		pairURL := signal.PairingURL(base, signalURL, id.PubB64, secret)
+		pairURL := signal.PairingURL(base, pairSignalArg(signalURL), id.PubB64, secret)
 		block, rows := renderPairBlock(pairURL, pairTTL)
 		ui.show(block, rows, pairTTL, func() {
 			// TTL fired: the secret is dead — disarm and grey out the on-screen code.
