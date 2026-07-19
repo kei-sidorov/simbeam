@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/kei-sidorov/simbeam/internal/companion"
 )
 
 // screenshotTimeout bounds a full-resolution capture so the daemon always
@@ -29,18 +31,30 @@ const bulkChunkCeiling = 200 * 1024
 const bulkChunkFallback = 16 * 1024
 
 // bulkMsg is an inbound request on the reliable ordered "bulk" DataChannel:
-// {"type":"screenshot"} — a full-resolution capture of the currently attached
-// simulator, no parameters — or {"type":"quality","scale":…,"bitrate":…}, which
-// re-encodes the live feed at a new quality.
+// {"type":"list"} — the simulator list — {"type":"screenshot"}, a
+// full-resolution capture of the currently attached simulator (no parameters) —
+// or {"type":"quality","scale":…,"bitrate":…}, which re-encodes the live feed at
+// a new quality.
 //
-// Quality rides "bulk" rather than "control" because control is unreliable
-// (maxRetransmits: 0) and would silently drop the request on exactly the bad
-// network that motivates lowering quality (decision №88).
+// list rides "bulk" rather than "control" because control is unreliable
+// (maxRetransmits: 0), and the sims reply is the largest, most critical control
+// message: on a cellular/relay path it was dropped with no retransmission,
+// hanging the list screen forever (issue #2). Quality rides bulk for the same
+// reason — dropped on exactly the bad network that motivates lowering it
+// (decision №88).
 type bulkMsg struct {
-	Type string `json:"type"` // screenshot|quality
+	Type string `json:"type"` // list|screenshot|quality
 	// QualityOpts carries quality's "scale"/"bitrate" (embedded → top-level
-	// fields). Ignored by screenshot, which takes no parameters.
+	// fields). Ignored by list and screenshot, which take no parameters.
 	QualityOpts
+}
+
+// bulkSims is the simulator-list reply on "bulk", the reliable-channel home of
+// what used to be control's "sims" reply. The JSON shape is unchanged — only the
+// channel moved (issue #2).
+type bulkSims struct {
+	Type string                `json:"type"` // always "sims"
+	Sims []companion.Simulator `json:"sims"`
 }
 
 // bulkQuality echoes the quality that actually took effect, after unset fields
@@ -73,6 +87,7 @@ const (
 	CodeBadRequest    = "bad_request"    // the request was not valid JSON
 	CodeNoAttachment  = "no_attachment"  // nothing is attached to act on
 	CodeCaptureFailed = "capture_failed" // the capture itself failed; the request was fine
+	CodeListFailed    = "list_failed"    // enumerating the simulators failed; the request was fine
 )
 
 // bulkErr is the text error envelope sent back on "bulk" when a request cannot
@@ -95,12 +110,33 @@ func (d *rtcDispatch) handleBulk(data []byte) {
 		return
 	}
 	switch m.Type {
+	case "list":
+		d.doList()
 	case "screenshot":
 		d.doScreenshot()
 	case "quality":
 		d.doQuality(m.QualityOpts)
 	default:
 		d.bulkError(CodeUnknownType, fmt.Sprintf("unknown bulk type %q", m.Type))
+	}
+}
+
+// doList answers a "list" request with the current simulator list. The client
+// re-sends list until a sims reply lands, so this is idempotent — it just
+// enumerates and replies every time. It rides "bulk" (reliable, ordered) so the
+// reply cannot be silently dropped on a cellular/relay path (issue #2).
+func (d *rtcDispatch) doList() {
+	sims, err := d.backend.List(d.baseCtx)
+	if err != nil {
+		d.bulkError(CodeListFailed, err.Error())
+		return
+	}
+	b, err := json.Marshal(bulkSims{Type: "sims", Sims: sims})
+	if err != nil || d.sendBulkText == nil {
+		return
+	}
+	if err := d.sendBulkText(string(b)); err != nil {
+		log.Printf("list: sending sims reply failed: %v", err)
 	}
 }
 

@@ -42,9 +42,12 @@ func startDaemon(t *testing.T, ctx context.Context, wsURL string, id Identity, p
 	go func() { _ = dsrv.ServeSignal(ctx, wsURL, id, pinned, win) }()
 }
 
-// newOfferer builds a pion "browser": a recvonly video transceiver + a control
-// DataChannel that asks for the sim list on open and forwards replies.
-func newOfferer(t *testing.T) (*webrtc.PeerConnection, chan []byte) {
+// newOfferer builds a pion "browser": a recvonly video transceiver plus the two
+// DataChannels the client speaks — "control" (lossy: input + small acks) and
+// "bulk" (reliable ordered). The sim list rides bulk (issue #2), so the offerer
+// asks for it on the bulk channel's open and forwards each channel's replies to
+// its own queue: ctrl carries hello/acks, bulk carries the sims reply.
+func newOfferer(t *testing.T) (pc *webrtc.PeerConnection, ctrl, bulk chan []byte) {
 	t.Helper()
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
@@ -55,19 +58,25 @@ func newOfferer(t *testing.T) (*webrtc.PeerConnection, chan []byte) {
 		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly}); err != nil {
 		t.Fatalf("AddTransceiverFromKind: %v", err)
 	}
-	replies := make(chan []byte, 4)
-	dc, err := pc.CreateDataChannel("control", nil)
-	if err != nil {
-		t.Fatalf("CreateDataChannel: %v", err)
-	}
-	dc.OnOpen(func() { _ = dc.SendText(`{"type":"list"}`) })
-	dc.OnMessage(func(m webrtc.DataChannelMessage) {
-		select {
-		case replies <- m.Data:
-		default:
+	ctrl = make(chan []byte, 4)
+	bulk = make(chan []byte, 4)
+	forward := func(label string, out chan []byte) *webrtc.DataChannel {
+		dc, err := pc.CreateDataChannel(label, nil)
+		if err != nil {
+			t.Fatalf("CreateDataChannel(%s): %v", label, err)
 		}
-	})
-	return pc, replies
+		dc.OnMessage(func(m webrtc.DataChannelMessage) {
+			select {
+			case out <- m.Data:
+			default:
+			}
+		})
+		return dc
+	}
+	forward("control", ctrl)
+	bulkDC := forward("bulk", bulk)
+	bulkDC.OnOpen(func() { _ = bulkDC.SendText(`{"type":"list"}`) })
+	return pc, ctrl, bulk
 }
 
 // joinUntilPresent dials the broker and sends join (with an enrollment proof when
@@ -173,40 +182,39 @@ func runHandshake(t *testing.T, ws *websocket.Conn, pc *webrtc.PeerConnection, d
 	}
 }
 
-// expectSims waits for the control DataChannel to deliver a 2-sim list. The
-// daemon also pushes an unsolicited "hello" on channel open, which may arrive
-// before the sims reply, so non-sims frames are skipped.
-func expectSims(t *testing.T, replies chan []byte, pc *webrtc.PeerConnection) {
+// expectSims waits for the bulk DataChannel to deliver a 2-sim list (the sims
+// reply lives on bulk now — issue #2). Non-sims bulk text frames are skipped.
+func expectSims(t *testing.T, bulk chan []byte, pc *webrtc.PeerConnection) {
 	t.Helper()
 	deadline := time.After(15 * time.Second)
 	for {
 		select {
-		case raw := <-replies:
-			var r ctrlReply
+		case raw := <-bulk:
+			var r bulkSims
 			if err := json.Unmarshal(raw, &r); err != nil {
-				t.Fatalf("unmarshal reply %q: %v", raw, err)
+				continue // binary chunk or non-sims frame; keep waiting
 			}
-			if r.Type == "hello" {
-				continue // unsolicited greeting; keep waiting for sims
+			if r.Type != "sims" {
+				continue
 			}
-			if r.Type != "sims" || len(r.Sims) != 2 {
-				t.Fatalf("want 2 sims, got type=%q n=%d (%s)", r.Type, len(r.Sims), raw)
+			if len(r.Sims) != 2 {
+				t.Fatalf("want 2 sims, got n=%d (%s)", len(r.Sims), raw)
 			}
 			return
 		case <-deadline:
-			t.Fatalf("control reply never arrived (state=%s)", pc.ConnectionState())
+			t.Fatalf("bulk sims reply never arrived (state=%s)", pc.ConnectionState())
 		}
 	}
 }
 
 // expectHello waits for the daemon's unsolicited "hello" greeting and returns
 // its Mac name + macOS version, skipping any other control frames.
-func expectHello(t *testing.T, replies chan []byte, pc *webrtc.PeerConnection) ctrlReply {
+func expectHello(t *testing.T, ctrl chan []byte, pc *webrtc.PeerConnection) ctrlReply {
 	t.Helper()
 	deadline := time.After(15 * time.Second)
 	for {
 		select {
-		case raw := <-replies:
+		case raw := <-ctrl:
 			var r ctrlReply
 			if err := json.Unmarshal(raw, &r); err != nil {
 				t.Fatalf("unmarshal reply %q: %v", raw, err)
@@ -220,30 +228,34 @@ func expectHello(t *testing.T, replies chan []byte, pc *webrtc.PeerConnection) c
 	}
 }
 
-// expectHelloAndSims drains control replies until it has seen BOTH the daemon's
-// hello and the 2-sim list (they race on channel open), returning the hello.
-func expectHelloAndSims(t *testing.T, replies chan []byte, pc *webrtc.PeerConnection) ctrlReply {
+// expectHelloAndSims drains both channels until it has seen BOTH the daemon's
+// hello (on control) and the 2-sim list (on bulk — issue #2), returning the
+// hello. The two race on channel open.
+func expectHelloAndSims(t *testing.T, ctrl, bulk chan []byte, pc *webrtc.PeerConnection) ctrlReply {
 	t.Helper()
 	var hello *ctrlReply
 	sawSims := false
 	deadline := time.After(15 * time.Second)
 	for hello == nil || !sawSims {
 		select {
-		case raw := <-replies:
+		case raw := <-ctrl:
 			var r ctrlReply
 			if err := json.Unmarshal(raw, &r); err != nil {
-				t.Fatalf("unmarshal reply %q: %v", raw, err)
+				t.Fatalf("unmarshal control reply %q: %v", raw, err)
 			}
-			switch r.Type {
-			case "hello":
+			if r.Type == "hello" {
 				h := r
 				hello = &h
-			case "sims":
-				if len(r.Sims) != 2 {
-					t.Fatalf("want 2 sims, got %d (%s)", len(r.Sims), raw)
-				}
-				sawSims = true
 			}
+		case raw := <-bulk:
+			var r bulkSims
+			if err := json.Unmarshal(raw, &r); err != nil || r.Type != "sims" {
+				continue // binary chunk or non-sims frame
+			}
+			if len(r.Sims) != 2 {
+				t.Fatalf("want 2 sims, got %d (%s)", len(r.Sims), raw)
+			}
+			sawSims = true
 		case <-deadline:
 			t.Fatalf("hello+sims never both arrived (state=%s)", pc.ConnectionState())
 		}
@@ -277,14 +289,14 @@ func TestEnrollmentEndToEnd(t *testing.T) {
 	})
 
 	clientPub, clientPriv, _ := signal.GenerateKeyPair()
-	pc, replies := newOfferer(t)
+	pc, ctrl, bulk := newOfferer(t)
 	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret)
 	t.Cleanup(func() { _ = ws.Close() })
 
 	runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
 	// The fresh enrollee receives the hello pin-ack (paired:true), confirming its
 	// key is durably saved — the explicit confirmation iOS persists on (#3).
-	if hello := expectHelloAndSims(t, replies, pc); !hello.Paired {
+	if hello := expectHelloAndSims(t, ctrl, bulk, pc); !hello.Paired {
 		t.Fatalf("enrolled client must receive hello paired:true, got %+v", hello)
 	}
 
@@ -322,12 +334,12 @@ func TestHelloCarriesHostInfo(t *testing.T) {
 		s.WithHost("Kirill's MacBook Pro", "26.5")
 	})
 
-	pc, replies := newOfferer(t)
+	pc, ctrl, _ := newOfferer(t)
 	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
 	t.Cleanup(func() { _ = ws.Close() })
 	runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
 
-	hello := expectHello(t, replies, pc)
+	hello := expectHello(t, ctrl, pc)
 	if hello.Name != "Kirill's MacBook Pro" || hello.OSVersion != "26.5" {
 		t.Fatalf("hello = {name:%q osVersion:%q}, want Mac name + macOS version", hello.Name, hello.OSVersion)
 	}
@@ -354,10 +366,10 @@ func TestReconnectByDaemonID(t *testing.T) {
 	startDaemon(t, ctx, wsURL, id, pinned, NewPairingWindow()) // window CLOSED
 
 	for i := 0; i < 2; i++ {
-		pc, replies := newOfferer(t)
+		pc, _, bulk := newOfferer(t)
 		ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
 		runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
-		expectSims(t, replies, pc)
+		expectSims(t, bulk, pc)
 		_ = ws.Close()
 		_ = pc.Close()
 		time.Sleep(100 * time.Millisecond) // let the daemon release the prior session
@@ -507,10 +519,10 @@ func TestTurnGateBySubscription(t *testing.T) {
 
 	connect := func(clientPub string, clientPriv ed25519.PrivateKey) []signal.ICEServer {
 		_ = pinned.Add(clientPub, "")
-		pc, replies := newOfferer(t)
+		pc, _, bulk := newOfferer(t)
 		ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
 		ice := runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
-		expectSims(t, replies, pc)
+		expectSims(t, bulk, pc)
 		_ = ws.Close()
 		_ = pc.Close()
 		time.Sleep(100 * time.Millisecond)

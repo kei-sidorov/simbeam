@@ -114,24 +114,32 @@ func newTestDispatch(backend Backend, out *[]ctrlReply) *rtcDispatch {
 	}
 }
 
-func TestDoListSendsSims(t *testing.T) {
-	var out []ctrlReply
-	d := newTestDispatch(&stubComp{sims: []companion.Simulator{
+// list/sims ride the reliable "bulk" channel, not control (issue #2): the sims
+// reply is the largest control message and was dropped with no retransmission on
+// a cellular/relay path, hanging the list screen.
+func TestDoListSendsSimsOnBulk(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{sims: []companion.Simulator{
 		{UDID: "A", Name: "iPhone", State: "Booted"},
 		{UDID: "B", Name: "iPad", State: "Shutdown"},
-	}}, &out)
-	d.handle([]byte(`{"type":"list"}`))
-	if len(out) != 1 || out[0].Type != "sims" || len(out[0].Sims) != 2 {
-		t.Fatalf("want one sims reply with 2 sims, got %+v", out)
+	}}, &sink)
+	d.handleBulk([]byte(`{"type":"list"}`))
+	sims := sink.sims()
+	if len(sims) != 1 || len(sims[0].Sims) != 2 {
+		t.Fatalf("want one sims reply with 2 sims, got %+v", sink.txt)
 	}
 }
 
-func TestDoListErrorReply(t *testing.T) {
-	var out []ctrlReply
-	d := newTestDispatch(&stubComp{listErr: errors.New("boom")}, &out)
-	d.handle([]byte(`{"type":"list"}`))
-	if len(out) != 1 || out[0].Type != "error" {
-		t.Fatalf("want one error reply, got %+v", out)
+func TestDoListErrorReplyOnBulk(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{listErr: errors.New("boom")}, &sink)
+	d.handleBulk([]byte(`{"type":"list"}`))
+	errs := sink.errors()
+	if len(errs) != 1 || errs[0].Code != CodeListFailed {
+		t.Fatalf("want one %q error, got %+v", CodeListFailed, sink.txt)
+	}
+	if len(sink.sims()) != 0 {
+		t.Fatalf("list error must not emit a sims reply, got %+v", sink.txt)
 	}
 }
 
@@ -397,6 +405,20 @@ func (s *bulkSink) errors() []bulkErr {
 			continue
 		}
 		out = append(out, e)
+	}
+	return out
+}
+
+// sims returns the sims replies among the text frames, so list tests can assert
+// on the simulator list without matching other bulk text frames.
+func (s *bulkSink) sims() []bulkSims {
+	var out []bulkSims
+	for _, raw := range s.txt {
+		var b bulkSims
+		if err := json.Unmarshal([]byte(raw), &b); err != nil || b.Type != "sims" {
+			continue
+		}
+		out = append(out, b)
 	}
 	return out
 }

@@ -6,27 +6,25 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/kei-sidorov/simbeam/internal/companion"
 )
 
 // ctrlReply is a downstream control message: daemon → client over the
 // "control" DataChannel.
 type ctrlReply struct {
-	Type      string                `json:"type"` // sims|booted|attached|detached|shutdown|hello|error
-	Msg       string                `json:"msg,omitempty"`
-	Sims      []companion.Simulator `json:"sims,omitempty"`
-	UDID      string                `json:"udid,omitempty"`
-	W         uint64                `json:"w,omitempty"`         // frame dimensions, set in the "attached" reply
-	H         uint64                `json:"h,omitempty"`         // frame dimensions, set in the "attached" reply
-	Name      string                `json:"name,omitempty"`      // hello: Mac display name
-	OSVersion string                `json:"osVersion,omitempty"` // hello: macOS version
-	Paired    bool                  `json:"paired,omitempty"`    // hello: this client's key is pinned (enrollment confirmed)
+	Type      string `json:"type"` // booted|attached|detached|shutdown|hello|error
+	Msg       string `json:"msg,omitempty"`
+	UDID      string `json:"udid,omitempty"`
+	W         uint64 `json:"w,omitempty"`         // frame dimensions, set in the "attached" reply
+	H         uint64 `json:"h,omitempty"`         // frame dimensions, set in the "attached" reply
+	Name      string `json:"name,omitempty"`      // hello: Mac display name
+	OSVersion string `json:"osVersion,omitempty"` // hello: macOS version
+	Paired    bool   `json:"paired,omitempty"`    // hello: this client's key is pinned (enrollment confirmed)
 }
 
 // rtcDispatch is the per-session control plane. It owns at most one video
 // "attachment" (a live backend Feed) and routes inbound control messages:
-// management (list/boot/attach/detach) and input (tap/swipe/...).
+// management (boot/attach/detach) and input (tap/swipe/...). The simulator list
+// (list/sims) rides the reliable "bulk" channel instead — see doList (issue #2).
 //
 // It depends on plain func values (send, writeFrame) rather than *rtc.Session
 // so management/input logic is unit-testable without a live pion handshake.
@@ -79,8 +77,6 @@ func (d *rtcDispatch) handle(data []byte) {
 		return // ignore malformed/unknown
 	}
 	switch m.Type {
-	case "list":
-		d.doList()
 	case "boot":
 		d.doBoot(m.UDID)
 	case "shutdown":
@@ -95,15 +91,6 @@ func (d *rtcDispatch) handle(data []byte) {
 	case "shake":
 		d.doShake()
 	}
-}
-
-func (d *rtcDispatch) doList() {
-	sims, err := d.backend.List(d.baseCtx)
-	if err != nil {
-		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
-		return
-	}
-	d.reply(ctrlReply{Type: "sims", Sims: sims})
 }
 
 func (d *rtcDispatch) doBoot(udid string) {

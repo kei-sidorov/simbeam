@@ -54,7 +54,6 @@ func TestParseControlManagementTypes(t *testing.T) {
 		typ  string
 		udid string
 	}{
-		{`{"type":"list"}`, "list", ""},
 		{`{"type":"boot","udid":"ABC"}`, "boot", "ABC"},
 		{`{"type":"attach","udid":"XYZ"}`, "attach", "XYZ"},
 		{`{"type":"detach"}`, "detach", ""},
@@ -74,5 +73,13 @@ func TestParseControlManagementTypes(t *testing.T) {
 func TestParseControlUnknownStillErrors(t *testing.T) {
 	if _, err := parseControl([]byte(`{"type":"explode"}`)); err == nil {
 		t.Fatal("want error for unknown type, got nil")
+	}
+}
+
+// list moved to the bulk channel (issue #2), so control must now reject it —
+// there is no dual path.
+func TestParseControlRejectsList(t *testing.T) {
+	if _, err := parseControl([]byte(`{"type":"list"}`)); err == nil {
+		t.Fatal("want error for list on control, got nil")
 	}
 }
