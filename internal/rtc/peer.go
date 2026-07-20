@@ -6,6 +6,7 @@ package rtc
 
 import (
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -88,6 +89,19 @@ func New(onControl, onBulk func([]byte), iceServers []webrtc.ICEServer) (*Sessio
 	})
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
 		switch st {
+		case webrtc.PeerConnectionStateConnected:
+			if pair, err := pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair(); err == nil && pair != nil {
+				localType, remoteType := "?", "?"
+				if pair.Local != nil {
+					localType = pair.Local.Typ.String()
+				}
+				if pair.Remote != nil {
+					remoteType = pair.Remote.Typ.String()
+				}
+				log.Printf("rtc: connected, selected candidate pair local=%s remote=%s (%s)", localType, remoteType, pair)
+			} else {
+				log.Printf("rtc: connected, no selected candidate pair (err=%v)", err)
+			}
 		case webrtc.PeerConnectionStateFailed,
 			webrtc.PeerConnectionStateClosed,
 			webrtc.PeerConnectionStateDisconnected:
@@ -137,12 +151,13 @@ func (s *Session) Send(b []byte) error {
 	return dc.SendText(string(b))
 }
 
-// SendBulk delivers one binary frame — a chunk of the full-resolution
-// screenshot — over the reliable ordered "bulk" DataChannel. One frame must
-// stay within the peer's negotiated max message size (see MaxMessageSize);
-// SCTP rejects anything larger outright, which is why the image is chunked
-// rather than sent whole. Returns ErrNoBulkChannel if the peer has not opened
-// the channel yet.
+// SendBulk delivers one binary frame — a chunk of a screenshot or the simulator
+// list — over the reliable ordered "bulk" DataChannel. The caller keeps each
+// frame tiny (server/bulk.go caps it at one ~1 KB SCTP packet so it does not
+// black-hole on an IPv6 path); that is well under the peer's negotiated max
+// message size (see MaxMessageSize), which is a separate, far higher hard cap
+// SCTP would reject a Send for exceeding. Returns ErrNoBulkChannel if the peer
+// has not opened the channel yet.
 func (s *Session) SendBulk(b []byte) error {
 	s.mu.Lock()
 	dc := s.bulk

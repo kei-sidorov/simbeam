@@ -120,13 +120,43 @@ func newTestDispatch(backend Backend, out *[]ctrlReply) *rtcDispatch {
 func TestDoListSendsSimsOnBulk(t *testing.T) {
 	var sink bulkSink
 	d := newBulkDispatch(&stubComp{sims: []companion.Simulator{
-		{UDID: "A", Name: "iPhone", State: "Booted"},
-		{UDID: "B", Name: "iPad", State: "Shutdown"},
+		{UDID: "A", Name: "iPhone", OSVersion: "26.1", State: "Booted"},
+		{UDID: "B", Name: "iPad", OSVersion: "18.5", State: "Shutdown"},
 	}}, &sink)
 	d.handleBulk([]byte(`{"type":"list"}`))
 	sims := sink.sims()
-	if len(sims) != 1 || len(sims[0].Sims) != 2 {
-		t.Fatalf("want one sims reply with 2 sims, got %+v", sink.txt)
+	if len(sims) != 2 {
+		t.Fatalf("want 2 sims, got %+v (frames %+v)", sims, sink.txt)
+	}
+	if sims[0] != (bulkSim{UDID: "A", Name: "iPhone", OSVersion: "26.1", State: "Booted"}) {
+		t.Fatalf("first sim decoded wrong: %+v", sims[0])
+	}
+	for _, frame := range sink.txt {
+		if len(frame) > bulkFrameMax {
+			t.Fatalf("sims header frame is %d bytes — over the %d one-packet cap", len(frame), bulkFrameMax)
+		}
+	}
+	for i, c := range sink.chunks {
+		if len(c) > bulkFrameMax {
+			t.Fatalf("sims chunk %d is %d bytes — over the %d one-packet cap", i, len(c), bulkFrameMax)
+		}
+	}
+}
+
+// The sims reply carries only the four fields a client renders — model,
+// architecture and type are dropped to keep it small (issue #3).
+func TestDoListSimsReplyOmitsUnusedFields(t *testing.T) {
+	var sink bulkSink
+	d := newBulkDispatch(&stubComp{sims: []companion.Simulator{
+		{UDID: "A", Name: "iPhone", Model: "iPhone17,1", OSVersion: "26.1",
+			State: "Booted", Architecture: "arm64", Type: "Simulator"},
+	}}, &sink)
+	d.handleBulk([]byte(`{"type":"list"}`))
+	payload := string(sink.image())
+	for _, dropped := range []string{"model", "architecture", `"type"`, "iPhone17,1", "arm64"} {
+		if strings.Contains(payload, dropped) {
+			t.Fatalf("sims payload must not carry %q, got %s", dropped, payload)
+		}
 	}
 }
 
@@ -409,16 +439,30 @@ func (s *bulkSink) errors() []bulkErr {
 	return out
 }
 
-// sims returns the sims replies among the text frames, so list tests can assert
-// on the simulator list without matching other bulk text frames.
-func (s *bulkSink) sims() []bulkSims {
-	var out []bulkSims
+// sims reassembles the chunked "sims" reply — the {"type":"sims","bytes":N}
+// header plus the binary chunks that follow it (issue #3) — and returns the
+// decoded simulator array. nil if no sims header was sent (e.g. a list error).
+// A list test performs a single operation, so every binary chunk in the sink
+// belongs to this one transfer.
+func (s *bulkSink) sims() []bulkSim {
+	var bytes int
+	sawHeader := false
 	for _, raw := range s.txt {
-		var b bulkSims
-		if err := json.Unmarshal([]byte(raw), &b); err != nil || b.Type != "sims" {
-			continue
+		var h bulkHeader
+		if err := json.Unmarshal([]byte(raw), &h); err == nil && h.Type == "sims" {
+			bytes, sawHeader = h.Bytes, true
 		}
-		out = append(out, b)
+	}
+	if !sawHeader {
+		return nil
+	}
+	payload := s.image() // chunks concatenated; only the sims transfer ran
+	if len(payload) != bytes {
+		return nil // announced byte count and delivered chunks disagree
+	}
+	var out []bulkSim
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return nil
 	}
 	return out
 }
@@ -484,7 +528,7 @@ func TestScreenshotRepliesWithHeaderThenChunks(t *testing.T) {
 func TestScreenshotSplitsLargeImageIntoCappedChunks(t *testing.T) {
 	var sink bulkSink
 	d := newBulkDispatch(&stubComp{}, &sink)
-	img := make([]byte, bulkChunkCeiling*2+7) // two full chunks and a short tail
+	img := make([]byte, bulkFrameMax*2+7) // two full chunks and a short tail
 	for i := range img {
 		img[i] = byte(i)
 	}
@@ -496,8 +540,8 @@ func TestScreenshotSplitsLargeImageIntoCappedChunks(t *testing.T) {
 		t.Fatalf("want 3 chunks for %d bytes, got %d", len(img), len(sink.chunks))
 	}
 	for i, c := range sink.chunks {
-		if len(c) > bulkChunkCeiling {
-			t.Fatalf("chunk %d is %d bytes — over the %d cap", i, len(c), bulkChunkCeiling)
+		if len(c) > bulkFrameMax {
+			t.Fatalf("chunk %d is %d bytes — over the %d one-packet cap", i, len(c), bulkFrameMax)
 		}
 	}
 	if !bytes.Equal(sink.image(), img) {
@@ -509,51 +553,55 @@ func TestScreenshotSplitsLargeImageIntoCappedChunks(t *testing.T) {
 	}
 }
 
-// A peer that advertises less than our ceiling — or omits a=max-message-size
-// entirely, leaving pion on its 65535 fallback — must still get its screenshot.
-// A chunker hardcoded to the ceiling has every send rejected here.
-func TestScreenshotChunksToNegotiatedCap(t *testing.T) {
-	for _, cap := range []int{65535, 16 * 1024} {
-		sink := bulkSink{maxMsg: cap}
-		d := newBulkDispatch(&stubComp{}, &sink)
-		img := make([]byte, 300*1024) // larger than the ceiling and the cap
-		for i := range img {
-			img[i] = byte(i)
-		}
-		d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: img}, udid: "ABC"}
+// The core of issue #3: even against a peer that would accept a far larger
+// message, no frame — header or chunk — exceeds one packet, so nothing
+// black-holes on an IPv6 path that cannot fragment. The huge maxMsg here would
+// have let the old ceiling-sized chunks through the sink, hiding the bug.
+func TestScreenshotNeverExceedsOnePacket(t *testing.T) {
+	sink := bulkSink{maxMsg: 1 << 30} // peer would accept anything; assert on what we send
+	d := newBulkDispatch(&stubComp{}, &sink)
+	img := make([]byte, 300*1024) // several hundred packets' worth
+	for i := range img {
+		img[i] = byte(i)
+	}
+	d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: img}, udid: "ABC"}
 
-		d.handleBulk([]byte(`{"type":"screenshot"}`))
+	d.handleBulk([]byte(`{"type":"screenshot"}`))
 
-		if errs := sink.errors(); len(errs) != 0 {
-			t.Fatalf("cap %d: transfer must succeed, got %+v", cap, errs)
+	if errs := sink.errors(); len(errs) != 0 {
+		t.Fatalf("transfer must succeed, got %+v", errs)
+	}
+	for i, frame := range sink.txt {
+		if len(frame) > bulkFrameMax {
+			t.Fatalf("text frame %d is %d bytes — over the %d one-packet cap", i, len(frame), bulkFrameMax)
 		}
-		for i, c := range sink.chunks {
-			if len(c) > cap {
-				t.Fatalf("cap %d: chunk %d is %d bytes — the peer rejects it", cap, i, len(c))
-			}
+	}
+	for i, c := range sink.chunks {
+		if len(c) > bulkFrameMax {
+			t.Fatalf("chunk %d is %d bytes — over the %d one-packet cap", i, len(c), bulkFrameMax)
 		}
-		if !bytes.Equal(sink.image(), img) {
-			t.Fatalf("cap %d: reassembled image differs from the capture", cap)
-		}
+	}
+	if !bytes.Equal(sink.image(), img) {
+		t.Fatalf("reassembled image differs from the capture")
 	}
 }
 
-// With no association yet the cap is unknown (0). Chunk to the conservative
-// fallback rather than to the ceiling, which the peer may well reject.
-func TestScreenshotUnknownCapUsesFallback(t *testing.T) {
+// With no association yet the negotiated cap is unknown (0). The one-packet
+// ceiling still applies — the fix does not depend on knowing the peer's cap.
+func TestScreenshotUnknownCapStillCapsAtOnePacket(t *testing.T) {
 	sink := bulkSink{maxMsg: 1 << 30} // sink accepts anything; assert on the size we choose
 	d := newBulkDispatch(&stubComp{}, &sink)
 	d.bulkMaxMsg = func() int { return 0 } // association not up
-	img := make([]byte, bulkChunkFallback+1)
+	img := make([]byte, bulkFrameMax+1)
 	d.att = &attachment{cancel: func() {}, feed: &stubFeed{shot: img}, udid: "ABC"}
 
 	d.handleBulk([]byte(`{"type":"screenshot"}`))
 
 	if len(sink.chunks) != 2 {
-		t.Fatalf("want the %d-byte fallback split (2 chunks), got %d", bulkChunkFallback, len(sink.chunks))
+		t.Fatalf("want a %d-byte one-packet split (2 chunks), got %d", bulkFrameMax, len(sink.chunks))
 	}
-	if len(sink.chunks[0]) != bulkChunkFallback {
-		t.Fatalf("want a %d-byte first chunk, got %d", bulkChunkFallback, len(sink.chunks[0]))
+	if len(sink.chunks[0]) != bulkFrameMax {
+		t.Fatalf("want a %d-byte first chunk, got %d", bulkFrameMax, len(sink.chunks[0]))
 	}
 }
 

@@ -182,28 +182,55 @@ func runHandshake(t *testing.T, ws *websocket.Conn, pc *webrtc.PeerConnection, d
 	}
 }
 
-// expectSims waits for the bulk DataChannel to deliver a 2-sim list (the sims
-// reply lives on bulk now — issue #2). Non-sims bulk text frames are skipped.
+// simsReassembler collects a chunked "sims" transfer off the bulk channel: the
+// {"type":"sims","bytes":N} header followed by binary chunks totalling N bytes
+// (issue #3). bulk is reliable + ordered, so feed sees the header before its
+// chunks. done flips true once N bytes have arrived.
+type simsReassembler struct {
+	want int
+	seen bool
+	buf  []byte
+	sims []bulkSim
+	done bool
+}
+
+// feed consumes one bulk frame. Before the header, non-sims frames are ignored;
+// after it, chunks accumulate until the announced byte count is reached.
+func (r *simsReassembler) feed(t *testing.T, raw []byte) {
+	if !r.seen {
+		var h bulkHeader
+		if err := json.Unmarshal(raw, &h); err != nil || h.Type != "sims" {
+			return // hello race, or a non-sims frame; keep waiting for the header
+		}
+		r.seen, r.want = true, h.Bytes
+	} else {
+		r.buf = append(r.buf, raw...)
+	}
+	if !r.seen || len(r.buf) < r.want {
+		return
+	}
+	if err := json.Unmarshal(r.buf, &r.sims); err != nil {
+		t.Fatalf("sims payload does not decode: %v (%s)", err, r.buf)
+	}
+	r.done = true
+}
+
+// expectSims drains the bulk DataChannel until the full chunked sims reply has
+// arrived (issue #3) and asserts it lists both simulators.
 func expectSims(t *testing.T, bulk chan []byte, pc *webrtc.PeerConnection) {
 	t.Helper()
+	var r simsReassembler
 	deadline := time.After(15 * time.Second)
-	for {
+	for !r.done {
 		select {
 		case raw := <-bulk:
-			var r bulkSims
-			if err := json.Unmarshal(raw, &r); err != nil {
-				continue // binary chunk or non-sims frame; keep waiting
-			}
-			if r.Type != "sims" {
-				continue
-			}
-			if len(r.Sims) != 2 {
-				t.Fatalf("want 2 sims, got n=%d (%s)", len(r.Sims), raw)
-			}
-			return
+			r.feed(t, raw)
 		case <-deadline:
 			t.Fatalf("bulk sims reply never arrived (state=%s)", pc.ConnectionState())
 		}
+	}
+	if len(r.sims) != 2 {
+		t.Fatalf("want 2 sims, got %d (%+v)", len(r.sims), r.sims)
 	}
 }
 
@@ -234,9 +261,9 @@ func expectHello(t *testing.T, ctrl chan []byte, pc *webrtc.PeerConnection) ctrl
 func expectHelloAndSims(t *testing.T, ctrl, bulk chan []byte, pc *webrtc.PeerConnection) ctrlReply {
 	t.Helper()
 	var hello *ctrlReply
-	sawSims := false
+	var sims simsReassembler
 	deadline := time.After(15 * time.Second)
-	for hello == nil || !sawSims {
+	for hello == nil || !sims.done {
 		select {
 		case raw := <-ctrl:
 			var r ctrlReply
@@ -248,17 +275,13 @@ func expectHelloAndSims(t *testing.T, ctrl, bulk chan []byte, pc *webrtc.PeerCon
 				hello = &h
 			}
 		case raw := <-bulk:
-			var r bulkSims
-			if err := json.Unmarshal(raw, &r); err != nil || r.Type != "sims" {
-				continue // binary chunk or non-sims frame
-			}
-			if len(r.Sims) != 2 {
-				t.Fatalf("want 2 sims, got %d (%s)", len(r.Sims), raw)
-			}
-			sawSims = true
+			sims.feed(t, raw)
 		case <-deadline:
 			t.Fatalf("hello+sims never both arrived (state=%s)", pc.ConnectionState())
 		}
+	}
+	if len(sims.sims) != 2 {
+		t.Fatalf("want 2 sims, got %d (%+v)", len(sims.sims), sims.sims)
 	}
 	return *hello
 }

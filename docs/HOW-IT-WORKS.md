@@ -324,14 +324,22 @@ request too large for one message, or one that may not be silently dropped. Thre
 
 | Request | Shape | Reply |
 |---------|-------|-------|
-| list       | `{"type":"list"}` | `{"type":"sims","sims":[{"udid":..,"name":..,"state":..,"os_version":..}, …]}` — the Mac's simulators (empty list → `"sims":[]`) |
-| screenshot | `{"type":"screenshot"}` | a full-resolution PNG, chunked — see [Full-resolution screenshots](#full-resolution-screenshots) |
+| list       | `{"type":"list"}` | the Mac's simulators, `chunked` — header `{"type":"sims","bytes":N}` + binary chunks → JSON array `[{"udid":..,"name":..,"os_version":..,"state":..}, …]` (empty list → `[]`). Same framing as a screenshot; see [Chunked transfers](#chunked-transfers-screenshots-and-the-simulator-list) |
+| screenshot | `{"type":"screenshot"}` | a full-resolution PNG, `chunked` — see [Chunked transfers](#chunked-transfers-screenshots-and-the-simulator-list) |
 | quality    | `{"type":"quality","scale":<0.25–1.0>,"bitrate":<bits/s>}` | `{"type":"quality","scale":…,"bitrate":…}` — what actually took effect |
+
+**Every bulk frame — text or binary — is at most 1024 bytes.** The transfer must fit a single SCTP
+packet. On an IPv6 path (Tailscale, native cellular: 1280-byte minimum link MTU, no in-network
+fragmentation, PMTUD usually filtered) any bulk message the stack splits across more than one packet
+**black-holes** — the fragment exceeds 1280, routers drop it silently, and SCTP retransmits the same
+oversized chunk forever, while small single-packet frames (`hello`, a `quality` echo) sail through.
+So a reply larger than one packet is never one frame: it is chunked (below), and the four-field
+`sims` array is deliberately slim — `model`, `architecture` and `type` are dropped — to stay small.
 
 The `sims` reply lives on `bulk`, not `control`: it is the largest and most critical control message,
 and on a cellular/relay path `control`'s unreliable delivery dropped it with no retransmission,
 hanging the list screen on a spinner forever. The client requests `list` once the channels open and
-re-requests until `sims` arrives, so the daemon answers every `list` (it is idempotent).
+re-requests until the `sims` reply arrives, so the daemon answers every `list` (it is idempotent).
 
 Every bulk request gets a reply: the payload above, or
 `{"type":"error","msg":"<reason>","code":"<machine code>"}` — branch on `code`, never on `msg`. Keep
@@ -351,36 +359,40 @@ channel for up to 15s.
 and pushing H.264; on `detach` (or a new `attach`), it stops. You don't renegotiate the WebRTC
 session to switch simulators — the video track just goes quiet and resumes.
 
-### Full-resolution screenshots
+### Chunked transfers (screenshots and the simulator list)
+
+A reply too big for one 1024-byte packet is sent as a **header followed by binary chunks**. Both the
+full-resolution screenshot and the `sims` list use this exact framing — only the header's `type` and
+the reassembled payload differ.
 
 The video track is lossy and downscaled, so a screenshot is **not** grabbed from it. `{"type":
 "screenshot"}` on `bulk` makes the daemon capture the attached device fresh, at its **native full
-resolution**, straight from the source — bypassing the video pipeline entirely.
-
-A PNG of a retina screen is several megabytes, far past what one SCTP message can carry, so the
-reply is a **header followed by binary chunks**:
+resolution**, straight from the source — bypassing the video pipeline entirely. A PNG of a retina
+screen is several megabytes; the `sims` array is a few kilobytes. Either way:
 
 ```
-← {"type":"screenshot","bytes":3145728}    ← text frame: total size
-← <binary chunk>                            ← binary frames …
+← {"type":"screenshot","bytes":3145728}    ← text frame: parse type + total size
+← <binary chunk>                            ← binary frames, each ≤ 1024 bytes …
 ← <binary chunk>
 ← <binary chunk>                            ← … concatenating to exactly 3145728 bytes
 ```
 
-**Reassembly:** append the binary frames in arrival order until you hold exactly `bytes` bytes.
-That is the complete PNG. There are no sequence numbers and none are needed — `bulk` is reliable
-and ordered, so chunks cannot arrive out of order or go missing. The header's `bytes` is your only
-end-of-transfer signal; the daemon sends no terminator.
+**Reassembly:** append the binary frames in arrival order until you hold exactly `bytes` bytes, then
+parse per the header's `type` — a `screenshot` blob is the PNG, a `sims` blob is the JSON simulator
+array. There are no sequence numbers and none are needed: `bulk` is reliable and ordered, so chunks
+cannot arrive out of order or go missing. The header's `bytes` is your only end-of-transfer signal;
+the daemon sends no terminator. Each chunk is capped at 1024 bytes, so expect many small chunks
+rather than a few large ones.
 
 **Success vs failure is the frame type, not the content.** A successful transfer is one *text*
 frame (the header) followed by *binary* frames. A failure is a single *text* frame:
-`{"type":"error","msg":"<reason>"}`. Branch on whether the frame arrived as binary or text — do not
-try to parse a chunk as JSON. Errors you should expect: nothing attached, the capture failed, or
-the capture came back empty.
+`{"type":"error","msg":"<reason>","code":"<machine code>"}`. Branch on whether the frame arrived as
+binary or text — do not try to parse a chunk as JSON. Errors you should expect: nothing attached,
+the capture failed, the capture came back empty, or (for `list`) enumerating the simulators failed.
 
-**Chunk size is the daemon's business, not a constant to hardcode.** It sizes each frame from the
-message cap your peer actually negotiated (capped at 200 KiB), so it adapts to your client. Just
-append whatever arrives.
+**Frame size is the daemon's business; you just append whatever arrives.** Every frame is at most
+1024 bytes — one SCTP packet, so nothing black-holes on an IPv6 path (see the cap note above the
+request table). Don't assume a particular chunk size or count; reassemble by the header's `bytes`.
 
 **The daemon always replies** — image or error — and bounds the capture at ~15s so a wedged
 simulator can't leave you waiting on your own timeout.

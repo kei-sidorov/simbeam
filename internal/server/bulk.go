@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"github.com/kei-sidorov/simbeam/internal/companion"
 )
 
 // screenshotTimeout bounds a full-resolution capture so the daemon always
@@ -17,18 +15,19 @@ import (
 // its timeout instead of a clean error.
 const screenshotTimeout = 15 * time.Second
 
-// bulkChunkCeiling caps one binary frame however much the peer allows. A
-// full-resolution PNG is several megabytes, so it MUST be split; libwebrtc
-// advertises 256 KiB and there is nothing to gain from frames larger than this
-// even against a peer that permits them.
-const bulkChunkCeiling = 200 * 1024
-
-// bulkChunkFallback is the frame size used when the peer's negotiated cap is
-// unknown (no SCTP association — in practice unreachable, since the request we
-// are answering arrived over that very association). 16 KiB is below every cap
-// SCTP can settle on, including the 65535 pion falls back to for a peer whose
-// SDP omits "a=max-message-size".
-const bulkChunkFallback = 16 * 1024
+// bulkFrameMax is the hard ceiling on EVERY frame written to "bulk", text or
+// binary. The transfer must fit a single SCTP packet: on an IPv6 path (Tailscale,
+// native cellular — 1280-byte minimum link MTU, no in-network fragmentation,
+// PMTUD typically filtered) any bulk message pion splits across more than one
+// SCTP packet black-holes. pion fragments at its fixed ~1200-byte SCTP MTU, the
+// resulting IPv6+UDP+DTLS packet exceeds 1280, routers drop it silently, and
+// SCTP retransmits the same oversized chunk forever. Small single-packet frames
+// (hello, quality echo) get through, so the peer looks healthy while a multi-
+// packet reply never lands and the client spins forever (issue #3). IPv4 hid
+// this (in-network fragmentation reassembles). pion exposes no SCTP-MTU knob, so
+// the fix is app-level: never put more than one packet on the channel. 1024
+// leaves margin under 1280 for the UDP/IPv6/DTLS/SCTP headers.
+const bulkFrameMax = 1024
 
 // bulkMsg is an inbound request on the reliable ordered "bulk" DataChannel:
 // {"type":"list"} — the simulator list — {"type":"screenshot"}, a
@@ -49,12 +48,16 @@ type bulkMsg struct {
 	QualityOpts
 }
 
-// bulkSims is the simulator-list reply on "bulk", the reliable-channel home of
-// what used to be control's "sims" reply. The JSON shape is unchanged — only the
-// channel moved (issue #2).
-type bulkSims struct {
-	Type string                `json:"type"` // always "sims"
-	Sims []companion.Simulator `json:"sims"`
+// bulkSim is one simulator in the "sims" reply. Only the four fields a client
+// actually renders travel the wire; model, architecture and type are dropped to
+// keep the reply small (issue #3). The reply is a bare JSON array of these,
+// delivered chunked like the screenshot (header + binary chunks) rather than as
+// one text frame, so no frame exceeds a single packet.
+type bulkSim struct {
+	UDID      string `json:"udid"`
+	Name      string `json:"name"`
+	OSVersion string `json:"os_version"`
+	State     string `json:"state"`
 }
 
 // bulkQuality echoes the quality that actually took effect, after unset fields
@@ -65,11 +68,12 @@ type bulkQuality struct {
 	QualityOpts
 }
 
-// bulkHeader announces an image transfer: the binary chunks that follow
-// concatenate to exactly Bytes bytes. The client needs the total because the
+// bulkHeader announces a chunked transfer: the binary chunks that follow it
+// concatenate to exactly Bytes bytes and are parsed per Type — "screenshot" → a
+// PNG, "sims" → the JSON simulator array. The client needs the total because the
 // channel gives it no other way to know when the last chunk has landed.
 type bulkHeader struct {
-	Type  string `json:"type"` // always "screenshot"
+	Type  string `json:"type"` // "screenshot" | "sims"
 	Bytes int    `json:"bytes"`
 }
 
@@ -124,18 +128,24 @@ func (d *rtcDispatch) handleBulk(data []byte) {
 // doList answers a "list" request with the current simulator list. The client
 // re-sends list until a sims reply lands, so this is idempotent — it just
 // enumerates and replies every time. It rides "bulk" (reliable, ordered) so the
-// reply cannot be silently dropped on a cellular/relay path (issue #2).
+// reply cannot be silently dropped on a cellular/relay path (issue #2), and it
+// is chunked like the screenshot so no frame exceeds one packet (issue #3).
 func (d *rtcDispatch) doList() {
 	sims, err := d.backend.List(d.baseCtx)
 	if err != nil {
 		d.bulkError(CodeListFailed, err.Error())
 		return
 	}
-	b, err := json.Marshal(bulkSims{Type: "sims", Sims: sims})
-	if err != nil || d.sendBulkText == nil {
+	wire := make([]bulkSim, len(sims))
+	for i, s := range sims {
+		wire[i] = bulkSim{UDID: s.UDID, Name: s.Name, OSVersion: s.OSVersion, State: s.State}
+	}
+	b, err := json.Marshal(wire)
+	if err != nil {
+		log.Printf("list: marshaling sims reply failed: %v", err)
 		return
 	}
-	if err := d.sendBulkText(string(b)); err != nil {
+	if err := d.sendChunked("sims", b); err != nil {
 		log.Printf("list: sending sims reply failed: %v", err)
 	}
 }
@@ -197,7 +207,7 @@ func (d *rtcDispatch) doScreenshot() {
 		d.bulkError(CodeCaptureFailed, "capture returned no bytes")
 		return
 	}
-	if err := d.sendImage(img); err != nil {
+	if err := d.sendChunked("screenshot", img); err != nil {
 		log.Printf("screenshot: sending %d bytes failed: %v", len(img), err)
 		d.bulkError(CodeCaptureFailed, fmt.Sprintf("send failed: %v", err))
 		return
@@ -205,31 +215,31 @@ func (d *rtcDispatch) doScreenshot() {
 	log.Printf("screenshot: sent %d bytes in %v", len(img), time.Since(started))
 }
 
-// chunkSize is the binary frame size for one transfer: the cap the peer actually
-// negotiated, clamped to the ceiling. Reading it per transfer rather than
-// hardcoding a guess is what keeps screenshots working against a peer that
-// advertises less than we assume (or advertises nothing, leaving pion on its
-// 65535 fallback) — every send above the cap is rejected outright.
+// chunkSize is the binary frame size for one transfer: bulkFrameMax, the
+// one-packet ceiling (issue #3), lowered only if the peer somehow negotiated a
+// max message size smaller still. SCTP never settles that low in practice, but
+// the min() is free insurance against a Send the peer would reject outright.
 func (d *rtcDispatch) chunkSize() int {
-	if d.bulkMaxMsg == nil {
-		return bulkChunkFallback
+	size := bulkFrameMax
+	if d.bulkMaxMsg != nil {
+		if negotiated := d.bulkMaxMsg(); negotiated > 0 && negotiated < size {
+			size = negotiated
+		}
 	}
-	negotiated := d.bulkMaxMsg()
-	if negotiated <= 0 {
-		return bulkChunkFallback
-	}
-	return min(negotiated, bulkChunkCeiling)
+	return size
 }
 
-// sendImage streams img as a text header announcing the byte count followed by
-// binary chunks within the peer's message-size cap. The channel is reliable and
-// ordered, so the chunks need no sequence numbers — the client simply appends
-// until it holds the announced total.
-func (d *rtcDispatch) sendImage(img []byte) error {
+// sendChunked streams payload as a text header announcing its byte count and
+// parse type, then binary chunks each within bulkFrameMax. The channel is
+// reliable and ordered, so the chunks need no sequence numbers — the client
+// appends until it holds the announced total, then parses per typ. Every bulk
+// reply too large for one packet goes out this way: the screenshot PNG and the
+// sims JSON.
+func (d *rtcDispatch) sendChunked(typ string, payload []byte) error {
 	if d.sendBulk == nil || d.sendBulkText == nil {
 		return errors.New("bulk channel not wired")
 	}
-	header, err := json.Marshal(bulkHeader{Type: "screenshot", Bytes: len(img)})
+	header, err := json.Marshal(bulkHeader{Type: typ, Bytes: len(payload)})
 	if err != nil {
 		return fmt.Errorf("encode header: %w", err)
 	}
@@ -237,9 +247,9 @@ func (d *rtcDispatch) sendImage(img []byte) error {
 		return fmt.Errorf("send header: %w", err)
 	}
 	size := d.chunkSize()
-	for offset := 0; offset < len(img); offset += size {
-		end := min(offset+size, len(img))
-		if err := d.sendBulk(img[offset:end]); err != nil {
+	for offset := 0; offset < len(payload); offset += size {
+		end := min(offset+size, len(payload))
+		if err := d.sendBulk(payload[offset:end]); err != nil {
 			return fmt.Errorf("send chunk at %d: %w", offset, err)
 		}
 	}
