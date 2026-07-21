@@ -21,18 +21,18 @@ Simulator lifecycle and full-resolution screenshots use Apple's own `xcrun simct
 `idb_companion`, no `ffmpeg`.**
 
 ```
-iPad / browser                                Mac
-┌──────────────┐                       ┌───────────────────────────────┐
-│  <video>     │ ◄── H.264 (WebRTC) ── │ simbeamd (Go)                 │
-│  gestures    │ ── control (DataCh) ─►│  ├─ simbeam-control           │
-└──────┬───────┘                       │  │    IOSurface → H.264 + HID │
-       │                               │  ├─ xcrun simctl (list/boot/  │
-       │   handshake only              │  │    shutdown/shake/screenshot│
-       ▼                               │  └─ pion   (WebRTC + control) │
-┌──────────────┐                       └──────────────┬────────────────┘
-│  signalling  │  ◄── outbound WSS ──                 ▼
-│  broker      │    (rendezvous, P2P)            iOS Simulator
-└──────────────┘                                 (CoreSimulator, needs Xcode)
+iPad / browser                            Mac
+┌──────────────┐                       ┌────────────────────────────┐
+│  <video>     │ ◄── H.264 (WebRTC) ── │ simbeamd (Go)              │
+│  gestures    │ ── control (DataCh) ─►│  ├─ simbeam-control        │
+└──────┬───────┘                       │  │   IOSurface → H.264+HID │
+       │                               │  ├─ xcrun simctl           │
+       │   handshake only              │  │   list · boot · shot    │
+       ▼                               │  └─ pion (WebRTC + control)│
+┌──────────────┐                       └──────────────┬─────────────┘
+│  signalling  │ ◄── outbound WSS ──                  ▼
+│  broker      │     (rendezvous, P2P)           iOS Simulator
+└──────────────┘                                 (CoreSimulator, Xcode)
 ```
 
 The signalling broker only brokers the **handshake**. Once peers find each other, video and
@@ -45,17 +45,6 @@ emits a fixed ~10s GOP with no keyframe control — multi-second artifacts on sc
 its only Meta release dates to 2022. `simbeam-control` owns the encoder, so it emits short
 keyframes (~1s) and a constant frame rate straight from the framebuffer, no re-encode step. See
 [decisions #34–#40, #105](docs/decisions.md).
-
-## Components
-
-| Part | What it is |
-|------|------------|
-| **`simbeamd`** | macOS daemon. Boots/streams a simulator, serves video over WebRTC, injects input. Open source (this repo). |
-| **`simbeam-signal`** | Reference signalling broker. Rendezvous over WSS, relays the SDP handshake, issues short-lived TURN credentials. Open source (this repo). |
-| **iPad client** | Native WebRTC client. Separate, paid product in its own repo — built once the server side is proven in the browser. |
-
-simbeam is **open-core**: the server is OSS, the polished client is the commercial product.
-The protocol is open; the moat is client UX and managed cloud infrastructure.
 
 ## Install
 
@@ -102,6 +91,17 @@ with `simbeamd unpair <clientPubKey>`. The daemon's identity lives in `~/.simbea
 
 > Want to drive it from a browser instead of the native client? Run with `--web ./web/debug`
 > and open the printed pairing URL — a reference debug client implements the full WebRTC flow.
+
+## Components
+
+| Part | What it is |
+|------|------------|
+| **`simbeamd`** | macOS daemon. Boots/streams a simulator, serves video over WebRTC, injects input. Open source (this repo). |
+| **`simbeam-signal`** | Reference signalling broker. Rendezvous over WSS, relays the SDP handshake, issues short-lived TURN credentials. Open source (this repo). |
+| **iPad client** | Native WebRTC client. Separate, paid product in its own repo — built once the server side is proven in the browser. |
+
+simbeam is **open-core**: the server is OSS, the polished client is the commercial product.
+The protocol is open; the moat is client UX and managed cloud infrastructure.
 
 ## Demo mode (no Mac required)
 
