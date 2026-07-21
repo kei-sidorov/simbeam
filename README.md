@@ -10,42 +10,6 @@ WebRTC link. The Mac makes only outbound connections — **zero open ports**.
 
 ---
 
-## How it works
-
-simbeam is a thin orchestration layer over a small native helper. Screen capture, H.264
-encoding and event injection for the simulator are done by **`simbeam-control`**
-([repo](https://github.com/kei-sidorov/simbeam-control)) — a tiny macOS binary that taps the
-CoreSimulator framebuffer (IOSurface) and encodes on VideoToolbox with keyframe control we own.
-The daemon spawns one per stream, reads framed H.264 from it, and ships that out over WebRTC.
-Simulator lifecycle and full-resolution screenshots use Apple's own `xcrun simctl`. **No
-`idb_companion`, no `ffmpeg`.**
-
-```
-iPad / browser                            Mac
-┌──────────────┐                       ┌────────────────────────────┐
-│  <video>     │ ◄── H.264 (WebRTC) ── │ simbeamd (Go)              │
-│  gestures    │ ── control (DataCh) ─►│  ├─ simbeam-control        │
-└──────┬───────┘                       │  │   IOSurface → H.264+HID │
-       │                               │  ├─ xcrun simctl           │
-       │   handshake only              │  │   list · boot · shot    │
-       ▼                               │  └─ pion (WebRTC + control)│
-┌──────────────┐                       └──────────────┬─────────────┘
-│  signalling  │ ◄── outbound WSS ──                  ▼
-│  broker      │     (rendezvous, P2P)           iOS Simulator
-└──────────────┘                                 (CoreSimulator, Xcode)
-```
-
-The signalling broker only brokers the **handshake**. Once peers find each other, video and
-control flow directly P2P and are end-to-end encrypted by WebRTC (DTLS-SRTP) — even when
-relayed through TURN. Pairing is authenticated with Ed25519 key pinning on both ends, so a
-malicious broker can disrupt but never impersonate or eavesdrop.
-
-**Why our own capture engine?** `idb_companion` (Meta's idb, which simbeam used to depend on)
-emits a fixed ~10s GOP with no keyframe control — multi-second artifacts on scene changes — and
-its only Meta release dates to 2022. `simbeam-control` owns the encoder, so it emits short
-keyframes (~1s) and a constant frame rate straight from the framebuffer, no re-encode step. See
-[decisions #34–#40, #105](docs/decisions.md).
-
 ## Install
 
 The daemon ships as a Homebrew cask (an unsigned, prebuilt binary; the cask strips the
@@ -91,6 +55,42 @@ with `simbeamd unpair <clientPubKey>`. The daemon's identity lives in `~/.simbea
 
 > Want to drive it from a browser instead of the native client? Run with `--web ./web/debug`
 > and open the printed pairing URL — a reference debug client implements the full WebRTC flow.
+
+## How it works
+
+simbeam is a thin orchestration layer over a small native helper. Screen capture, H.264
+encoding and event injection for the simulator are done by **`simbeam-control`**
+([repo](https://github.com/kei-sidorov/simbeam-control)) — a tiny macOS binary that taps the
+CoreSimulator framebuffer (IOSurface) and encodes on VideoToolbox with keyframe control we own.
+The daemon spawns one per stream, reads framed H.264 from it, and ships that out over WebRTC.
+Simulator lifecycle and full-resolution screenshots use Apple's own `xcrun simctl`. **No
+`idb_companion`, no `ffmpeg`.**
+
+```
+iPad / browser                            Mac
+┌──────────────┐                       ┌────────────────────────────┐
+│  <video>     │ ◄── H.264 (WebRTC) ── │ simbeamd (Go)              │
+│  gestures    │ ── control (DataCh) ─►│  ├─ simbeam-control        │
+└──────┬───────┘                       │  │   IOSurface → H.264+HID │
+       │                               │  ├─ xcrun simctl           │
+       │   handshake only              │  │   list · boot · shot    │
+       ▼                               │  └─ pion (WebRTC + control)│
+┌──────────────┐                       └──────────────┬─────────────┘
+│  signalling  │ ◄── outbound WSS ──                  ▼
+│  broker      │     (rendezvous, P2P)           iOS Simulator
+└──────────────┘                                 (CoreSimulator, Xcode)
+```
+
+The signalling broker only brokers the **handshake**. Once peers find each other, video and
+control flow directly P2P and are end-to-end encrypted by WebRTC (DTLS-SRTP) — even when
+relayed through TURN. Pairing is authenticated with Ed25519 key pinning on both ends, so a
+malicious broker can disrupt but never impersonate or eavesdrop.
+
+**Why our own capture engine?** `idb_companion` (Meta's idb, which simbeam used to depend on)
+emits a fixed ~10s GOP with no keyframe control — multi-second artifacts on scene changes — and
+its only Meta release dates to 2022. `simbeam-control` owns the encoder, so it emits short
+keyframes (~1s) and a constant frame rate straight from the framebuffer, no re-encode step. See
+[decisions #34–#40, #105](docs/decisions.md).
 
 ## Components
 
