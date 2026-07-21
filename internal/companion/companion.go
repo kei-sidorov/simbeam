@@ -51,6 +51,34 @@ func (c *Client) simctl() string {
 	return c.Simctl
 }
 
+// CheckToolchain verifies the iOS Simulator toolchain is usable before we lean on
+// it: `xcrun` must be able to locate `simctl`, which ships only with a full Xcode
+// (the Command Line Tools alone do not include it). On failure it returns an
+// actionable error naming the fix, instead of letting a raw `xcrun: error: unable
+// to find utility "simctl"` surface mid-operation.
+func (c *Client) CheckToolchain(ctx context.Context) error {
+	if err := exec.CommandContext(ctx, c.simctl(), "--find", "simctl").Run(); err == nil {
+		return nil
+	}
+
+	// Enrich the hint when xcode-select is pointed at the Command Line Tools,
+	// which is the usual cause on a machine that has never installed full Xcode.
+	hint := ""
+	if out, err := exec.CommandContext(ctx, "xcode-select", "-p").Output(); err == nil {
+		if p := strings.TrimSpace(string(out)); strings.Contains(p, "CommandLineTools") {
+			hint = fmt.Sprintf("\n(xcode-select points at %s — the Command Line Tools, which don't include simctl.)", p)
+		}
+	}
+	return fmt.Errorf(`iOS Simulator tools not found: xcrun can't locate simctl.%s
+
+simbeam needs a full Xcode, not just the Command Line Tools. To fix:
+  1. Install Xcode (App Store, or https://developer.apple.com/xcode/).
+  2. Point the toolchain at it:
+       sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+  3. Accept the license once:
+       sudo xcodebuild -license accept`, hint)
+}
+
 // Screenshot captures a full-resolution PNG of the given simulator via
 // `simctl io <udid> screenshot`. simctl refuses to write to stdout (it treats
 // "-" as a filename on a read-only volume), so the frame is captured to a temp

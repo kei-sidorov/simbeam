@@ -164,6 +164,9 @@ func runServe(argv []string) error {
 	_ = fs.Parse(argv)
 
 	c := companion.New()
+	if err := c.CheckToolchain(context.Background()); err != nil {
+		return err
+	}
 	path, err := sim.ResolveControl()
 	if err != nil {
 		return err
@@ -569,6 +572,9 @@ func runList() error {
 	defer cancel()
 
 	c := companion.New()
+	if err := c.CheckToolchain(ctx); err != nil {
+		return err
+	}
 	sims, err := c.List(ctx)
 	if err != nil {
 		return err

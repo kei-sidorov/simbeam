@@ -26,6 +26,30 @@ func fakeSimctl(t *testing.T, script string) *Client {
 	return &Client{Simctl: fakeBinary(t, "xcrun", script)}
 }
 
+func TestCheckToolchainOK(t *testing.T) {
+	// `xcrun --find simctl` succeeds → no error.
+	c := fakeSimctl(t, "exit 0\n")
+	if err := c.CheckToolchain(context.Background()); err != nil {
+		t.Fatalf("CheckToolchain = %v, want nil", err)
+	}
+}
+
+func TestCheckToolchainMissingSimctl(t *testing.T) {
+	// Fake xcrun that fails to find simctl, like a Command-Line-Tools-only Mac.
+	c := fakeSimctl(t, `echo 'xcrun: error: unable to find utility "simctl"' >&2
+exit 72
+`)
+	err := c.CheckToolchain(context.Background())
+	if err == nil {
+		t.Fatal("CheckToolchain = nil, want an actionable error")
+	}
+	for _, want := range []string{"full Xcode", "xcode-select", "simctl"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q; got:\n%s", want, err)
+		}
+	}
+}
+
 func TestBootSuccess(t *testing.T) {
 	c := fakeSimctl(t, "exit 0\n")
 	if err := c.Boot(context.Background(), "UDID-123"); err != nil {
