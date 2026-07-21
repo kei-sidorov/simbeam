@@ -100,6 +100,8 @@ Homebrew-дистрибуцию, Postgres (через `Store`).
   `simbeam-signal` (linux amd64) на тег `v*`.
 - **Homebrew tap** (`kei-sidorov/homebrew-simbeam`): предсобранный неподписанный
   `simbeamd`, зависимости `idb-companion` + `ffmpeg`. Обновление — `brew upgrade`.
+  _(Обновлено decision #105: Mac-путь переведён на свой `simbeam-control`; каск
+  теперь зависит от `kei-sidorov/simbeam/simbeam-control`, без idb/ffmpeg.)_
 - **Self-host сервера**: VPS + systemd, брокер + coturn за Caddy (авто-TLS).
   **Pull-автообновление**: systemd timer тянет новый релиз из GitHub Releases,
   проверяет checksum, атомарно подменяет бинарь, рестартит юнит. Ноль серверных

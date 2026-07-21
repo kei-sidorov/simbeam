@@ -12,24 +12,27 @@ WebRTC link. The Mac makes only outbound connections — **zero open ports**.
 
 ## How it works
 
-simbeam is a thin orchestration layer, not a new capture engine. All the heavy lifting —
-CoreSimulator, screen capture, event injection — is done by Meta's
-[`idb_companion`](https://github.com/facebook/idb) (MIT). The daemon talks gRPC to it,
-re-encodes frames with hardware H.264, and ships them out over WebRTC.
+simbeam is a thin orchestration layer over a small native helper. Screen capture, H.264
+encoding and event injection for the simulator are done by **`simbeam-control`**
+([repo](https://github.com/kei-sidorov/simbeam-control)) — a tiny macOS binary that taps the
+CoreSimulator framebuffer (IOSurface) and encodes on VideoToolbox with keyframe control we own.
+The daemon spawns one per stream, reads framed H.264 from it, and ships that out over WebRTC.
+Simulator lifecycle and full-resolution screenshots use Apple's own `xcrun simctl`. **No
+`idb_companion`, no `ffmpeg`.**
 
 ```
 iPad / browser                                Mac
 ┌──────────────┐                       ┌───────────────────────────────┐
 │  <video>     │ ◄── H.264 (WebRTC) ── │ simbeamd (Go)                 │
-│  gestures    │ ── control (DataCh) ─►│  ├─ idb_companion  (gRPC)     │
-└──────┬───────┘                       │  │    describe/screenshot/hid │
-       │                               │  ├─ ffmpeg (h264_videotoolbox)│
-       │   handshake only              │  └─ pion   (WebRTC + control) │
-       ▼                               └──────────────┬────────────────┘
-┌──────────────┐                                      ▼
-│  signalling  │  ◄── outbound WSS from both ──   iOS Simulator
-│  broker      │       (rendezvous, then P2P)    (CoreSimulator, needs Xcode)
-└──────────────┘
+│  gestures    │ ── control (DataCh) ─►│  ├─ simbeam-control           │
+└──────┬───────┘                       │  │    IOSurface → H.264 + HID │
+       │                               │  ├─ xcrun simctl (list/boot/  │
+       │   handshake only              │  │    shutdown/shake/screenshot│
+       ▼                               │  └─ pion   (WebRTC + control) │
+┌──────────────┐                       └──────────────┬────────────────┘
+│  signalling  │  ◄── outbound WSS ──                 ▼
+│  broker      │    (rendezvous, P2P)            iOS Simulator
+└──────────────┘                                 (CoreSimulator, needs Xcode)
 ```
 
 The signalling broker only brokers the **handshake**. Once peers find each other, video and
@@ -37,10 +40,11 @@ control flow directly P2P and are end-to-end encrypted by WebRTC (DTLS-SRTP) —
 relayed through TURN. Pairing is authenticated with Ed25519 key pinning on both ends, so a
 malicious broker can disrupt but never impersonate or eavesdrop.
 
-**Why re-encode instead of forwarding idb's H.264?** `idb_companion` emits a fixed ~10s GOP
-with no keyframe control, which produces multi-second artifacts on scene changes. By encoding
-PNG screenshots through our own ffmpeg pipeline we own the GOP and emit short keyframes
-(~1–2s). See [decisions #34–#40](docs/decisions.md).
+**Why our own capture engine?** `idb_companion` (Meta's idb, which simbeam used to depend on)
+emits a fixed ~10s GOP with no keyframe control — multi-second artifacts on scene changes — and
+its only Meta release dates to 2022. `simbeam-control` owns the encoder, so it emits short
+keyframes (~1s) and a constant frame rate straight from the framebuffer, no re-encode step. See
+[decisions #34–#40, #105](docs/decisions.md).
 
 ## Components
 
@@ -56,8 +60,8 @@ The protocol is open; the moat is client UX and managed cloud infrastructure.
 ## Install
 
 The daemon ships as a Homebrew cask (an unsigned, prebuilt binary; the cask strips the
-macOS quarantine flag post-install). It auto-installs `ffmpeg` and `idb_companion` as
-dependencies — one command, no extra taps:
+macOS quarantine flag post-install). Its only dependency is `simbeam-control`, vendored in the
+same tap — one command, no extra taps:
 
 ```bash
 brew trust kei-sidorov/simbeam    # once: Homebrew 6+ gates non-official taps
@@ -69,16 +73,16 @@ Homebrew 6+ refuses to load formulae/casks from a non-official tap until you tru
 the interactive install also prompts for this, but `brew trust` up front avoids a mid-install
 "Refusing to load formula … run brew trust" stop. Update later with `brew upgrade --cask simbeamd`.
 
-> `idb_companion` isn't in homebrew-core (it's Meta's, in the `facebook/fb` tap), and
-> Homebrew won't auto-tap a third-party tap for a dependency. So the tap vendors a mirror
-> of its formula (`Formula/idb-companion.rb` in `homebrew-simbeam`) and the cask depends on
-> `kei-sidorov/simbeam/idb-companion` — already present when the cask installs. Verified
-> end-to-end on a clean machine: the single cask command pulls idb from our tap, no
-> `facebook/fb` tap involved.
+> `simbeam-control` is an unsigned universal binary built from
+> [its own repo](https://github.com/kei-sidorov/simbeam-control) and published as
+> `Formula/simbeam-control.rb` in this tap; the cask depends on
+> `kei-sidorov/simbeam/simbeam-control`, already present when the cask installs. It uses
+> private CoreSimulator/SimulatorKit APIs, so a **full Xcode** install is required (not just
+> the Command Line Tools).
 
 ## Quick start
 
-List the simulators on your machine (uses `xcrun simctl` — works even before idb is installed):
+List the simulators on your machine (uses `xcrun simctl` — needs only Xcode, not the stream helper):
 
 ```bash
 simbeamd list
@@ -138,25 +142,24 @@ Self-hosting is a documented, secrets-free path: VPS + systemd, broker + coturn 
 
 ## Requirements
 
-- macOS with **Xcode / Command Line Tools** — required for the simulators themselves.
-- **`idb_companion`** — installed automatically by the cask (vendored mirror of Meta's
-  formula, see Install), or `brew tap facebook/fb && brew install idb-companion`.
-- **`ffmpeg`** with `h264_videotoolbox` — installed automatically by the cask, or `brew install ffmpeg`.
+- macOS with a **full Xcode** install — required both for the simulators themselves and for
+  `simbeam-control` (private CoreSimulator/SimulatorKit APIs).
+- **`simbeam-control`** in `PATH` — installed automatically by the cask (from this tap), or
+  `brew install kei-sidorov/simbeam/simbeam-control`.
 
 For browser playback, **Chrome** is recommended (`jitterBufferTarget=0` for lower latency;
 Safari ignores the hint but still plays).
 
 ## Build from source
 
-Requires Go (`brew install go`), plus `idb_companion` and `ffmpeg` in `PATH`.
+Requires Go (`brew install go`) and `simbeam-control` in `PATH`
+(`brew install kei-sidorov/simbeam/simbeam-control`).
 
 ```bash
-go run ./cmd/simbeamd list                      # enumerate simulators
+go run ./cmd/simbeamd list                      # enumerate simulators (simctl only)
 make run-remote                                 # daemon + baked broker + debug web client
 go run ./cmd/simbeam-signal --addr :9000        # run a local broker
 ```
-
-gRPC stubs for `idb.proto` are committed (`internal/idbpb`); regenerate via the `Makefile`.
 
 ## Repository layout
 
@@ -164,18 +167,17 @@ gRPC stubs for `idb.proto` are committed (`internal/idbpb`); regenerate via the 
 simbeam/
 ├── cmd/simbeamd/         # macOS daemon (boot, stream, input, pairing)
 ├── cmd/simbeam-signal/   # reference signalling broker
-├── internal/             # companion (CLI lifecycle), idb (gRPC), rtc (pion), ...
+├── internal/             # companion (simctl lifecycle), backend/sim (simbeam-control), rtc (pion), ...
 ├── web/debug/            # browser reference client (served with --web)
 ├── deploy/               # self-host scaffolding (systemd, Caddy, coturn, updater)
-├── proto/idb.proto       # idb gRPC contract
 └── docs/                 # architecture, roadmap, decision log
 ```
 
 ## Scope & non-goals
 
-Simulators only — no real-device support. Deliberately deferred: adaptive bitrate, a custom
-ScreenCaptureKit pipeline, bundling/notarizing `idb_companion`. See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the reasoning.
+Simulators only — no real-device support. Deliberately deferred: adaptive bitrate,
+notarizing the shipped binaries. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
+reasoning.
 
 ## Documentation
 
