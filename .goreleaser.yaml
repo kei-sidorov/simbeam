@@ -60,22 +60,19 @@ homebrew_casks:
     homepage: "https://github.com/kei-sidorov/simbeam"
     description: "simbeam daemon — stream an iOS simulator from Mac to iPad"
     dependencies:
-      # idb-companion is NOT in homebrew-core — upstream it lives in Meta's
-      # facebook/fb tap. Homebrew refuses to auto-tap third-party taps for a
-      # dependency (security), even with the fully-qualified owner/tap/formula
-      # name — so a fresh Mac failed with "This command requires the tap
-      # facebook/fb" before the binary ever downloaded. Fix: we vendor a mirror
-      # of Meta's formula into OUR tap (Formula/idb-companion.rb in
-      # homebrew-simbeam). That tap is already tapped by the time this cask
-      # installs, so the dependency resolves and idb auto-installs — no extra
-      # `brew tap` for the user. Keep the mirror's url/sha256 in sync with
-      # Meta's on idb bumps (we're pinned to 1.1.8 per CLAUDE.md).
-      - formula: kei-sidorov/simbeam/idb-companion
-      - formula: ffmpeg
+      # The Mac media+input path is now our own simbeam-control (native
+      # IOSurface → VideoToolbox H.264 + Indigo HID), so idb_companion and
+      # ffmpeg are both gone. simbeam-control lives in Formula/simbeam-control.rb
+      # in this same tap, which is already tapped by the time this cask installs,
+      # so the dependency resolves and installs with no extra `brew tap`. It
+      # ships an unsigned universal binary and needs a full Xcode (private
+      # CoreSimulator/SimulatorKit). Keep its url/sha256 in sync on bumps.
+      - formula: kei-sidorov/simbeam/simbeam-control
     caveats: |
       simbeamd is shipped as an unsigned binary. The cask's post-install hook
       strips the macOS quarantine attribute so Gatekeeper should not block it.
-      simbeamd shells out to idb_companion (simulators) and ffmpeg (h264_videotoolbox).
+      simbeamd drives simulators through simbeam-control (needs a full Xcode);
+      idb_companion and ffmpeg are no longer required.
     hooks:
       post:
         install: |
