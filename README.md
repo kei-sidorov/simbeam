@@ -60,16 +60,21 @@ macOS quarantine flag post-install). It auto-installs `ffmpeg` and `idb_companio
 dependencies — one command, no extra taps:
 
 ```bash
+brew trust kei-sidorov/simbeam    # once: Homebrew 6+ gates non-official taps
 brew install --cask kei-sidorov/simbeam/simbeamd
 simbeamd version
 ```
 
-Update later with `brew upgrade --cask simbeamd`.
+Homebrew 6+ refuses to load formulae/casks from a non-official tap until you trust it;
+the interactive install also prompts for this, but `brew trust` up front avoids a mid-install
+"Refusing to load formula … run brew trust" stop. Update later with `brew upgrade --cask simbeamd`.
 
 > `idb_companion` isn't in homebrew-core (it's Meta's, in the `facebook/fb` tap), and
 > Homebrew won't auto-tap a third-party tap for a dependency. So the tap vendors a mirror
 > of its formula (`Formula/idb-companion.rb` in `homebrew-simbeam`) and the cask depends on
-> `kei-sidorov/simbeam/idb-companion` — already present when the cask installs.
+> `kei-sidorov/simbeam/idb-companion` — already present when the cask installs. Verified
+> end-to-end on a clean machine: the single cask command pulls idb from our tap, no
+> `facebook/fb` tap involved.
 
 ## Quick start
 
