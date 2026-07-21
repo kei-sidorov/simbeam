@@ -60,6 +60,16 @@ type control struct {
 	cmd    *exec.Cmd
 	frames <-chan encoder.Frame
 
+	// readers counts the goroutines reading the stdout/stderr pipes. Close must
+	// wait on them before cmd.Wait(), which closes the pipes: reading a pipe
+	// after Wait has closed it is a documented os/exec fd-reuse race.
+	readers sync.WaitGroup
+	// closed is shut by Close so the frames goroutine unblocks from a channel
+	// send even when nothing is draining and ctx was not cancelled first — Close
+	// must not depend on the caller's teardown order to reap its readers.
+	closed    chan struct{}
+	closeOnce sync.Once
+
 	mu    sync.Mutex     // guards w/stdin during writes and shutdown
 	w     *bufio.Writer  // NDJSON control writer over stdin; nil once closed
 	stdin io.WriteCloser // held open for the feed's lifetime (EOF shuts the process down)
@@ -100,7 +110,7 @@ func newControl(ctx context.Context, bin, udid string, q server.QualityOpts) (*c
 		return nil, err
 	}
 
-	c := &control{cmd: cmd, stdin: stdin, w: bufio.NewWriter(stdin)}
+	c := &control{cmd: cmd, stdin: stdin, w: bufio.NewWriter(stdin), closed: make(chan struct{})}
 	go func() {
 		<-ctx.Done()
 		c.closeStdin()
@@ -112,7 +122,9 @@ func newControl(ctx context.Context, bin, udid string, q server.QualityOpts) (*c
 	ready := make(chan controlDims, 1)
 	done := make(chan struct{})
 	var lastLine string
+	c.readers.Add(1)
 	go func() {
+		defer c.readers.Done()
 		defer close(done)
 		sc := bufio.NewScanner(stderr)
 		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -134,7 +146,7 @@ func newControl(ctx context.Context, bin, udid string, q server.QualityOpts) (*c
 
 	select {
 	case <-ready:
-		c.frames = readControlFrames(ctx, stdout)
+		c.frames = c.readFrames(ctx, stdout)
 		return c, nil
 	case <-done:
 		c.Close()
@@ -217,13 +229,18 @@ func (c *control) closeStdin() {
 	c.w = nil
 }
 
-// Close stops the process: closing stdin asks it to exit, and CommandContext
-// kills it on ctx cancel. Wait reaps it.
+// Close stops the process: closing stdin asks it to exit, Kill guarantees it.
+// The pipe readers are drained to completion (Kill EOFs their pipes) before
+// cmd.Wait(), which closes those pipes — the caller must have cancelled the
+// feed's ctx first (Feed contract) so the frames goroutine isn't parked on a
+// send with no reader.
 func (c *control) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
 	c.closeStdin()
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}
+	c.readers.Wait()
 	_ = c.cmd.Wait()
 	return nil
 }
@@ -303,13 +320,16 @@ func clamp01(v float64) float64 {
 	return v
 }
 
-// readControlFrames converts simbeam-control's framed H.264 stdout —
+// readFrames converts simbeam-control's framed H.264 stdout —
 // [4B len][1B flags][8B pts_micros][N bytes Annex-B] — into encoder.Frames.
 // Duration is the measured pts delta (decision №93), not a fixed 1/fps. The
-// channel closes when the process exits or ctx is cancelled.
-func readControlFrames(ctx context.Context, stdout io.Reader) <-chan encoder.Frame {
+// channel closes when the process exits or ctx is cancelled; the goroutine is
+// tracked in c.readers so Close waits for it before cmd.Wait closes the pipe.
+func (c *control) readFrames(ctx context.Context, stdout io.Reader) <-chan encoder.Frame {
 	frames := make(chan encoder.Frame)
+	c.readers.Add(1)
 	go func() {
+		defer c.readers.Done()
 		defer close(frames)
 		r := bufio.NewReaderSize(stdout, 1<<20)
 		hdr := make([]byte, 13)
@@ -343,6 +363,8 @@ func readControlFrames(ctx context.Context, stdout io.Reader) <-chan encoder.Fra
 			select {
 			case frames <- encoder.Frame{Data: buf, Duration: dur}:
 			case <-ctx.Done():
+				return
+			case <-c.closed:
 				return
 			}
 		}
