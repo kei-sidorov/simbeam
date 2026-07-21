@@ -116,7 +116,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "simbeamd — simbeam daemon")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  simbeamd list    List available iOS simulators via idb_companion")
+	fmt.Fprintln(w, "  simbeamd list    List available iOS simulators via xcrun simctl")
 	fmt.Fprintln(w, "  simbeamd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
 	fmt.Fprintln(w, "  simbeamd demo    Serve a headless-browser demo device instead of a simulator (flags: --signal, --url, --chrome, --pair-secret, ...)")
 	fmt.Fprintln(w, "  simbeamd unpair  Revoke a paired client: simbeamd unpair <clientPubKey>")
@@ -164,7 +164,7 @@ func runServe(argv []string) error {
 	_ = fs.Parse(argv)
 
 	c := companion.New()
-	path, err := c.Resolve()
+	path, err := sim.ResolveControl()
 	if err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ func runServe(argv []string) error {
 		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir, *identityPath, *clientsPath, *pairTTL)
 	}
 
-	fmt.Printf("simbeamd serving on %s (idb_companion: %s)\n", *addr, path)
+	fmt.Printf("simbeamd serving on %s (simbeam-control: %s)\n", *addr, path)
 	if *webDir != "" {
 		fmt.Printf("debug client: http://localhost%s/\n", *addr)
 	}
@@ -569,16 +569,6 @@ func runList() error {
 	defer cancel()
 
 	c := companion.New()
-	// Listing uses simctl and no longer needs idb_companion; only report idb's
-	// status (it is still required for streaming) instead of failing without it.
-	if path, err := c.Resolve(); err != nil {
-		fmt.Printf("idb_companion: not found (required for streaming, not for list)\n\n")
-	} else if v, err := c.Version(ctx); err == nil {
-		fmt.Printf("idb_companion: %s (built %s)\n\n", path, v)
-	} else {
-		fmt.Printf("idb_companion: %s\n\n", path)
-	}
-
 	sims, err := c.List(ctx)
 	if err != nil {
 		return err

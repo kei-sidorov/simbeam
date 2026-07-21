@@ -69,9 +69,9 @@ func (o QualityOpts) Resolve(defScale float64) QualityOpts {
 }
 
 // Backend abstracts what is being streamed: real iOS simulators via
-// idb_companion sidecars on macOS (backend/sim), or a headless browser for the
-// hosted demo (backend/browser). The session layer (rtcDispatch) only ever
-// talks to this interface; main wires the concrete backend.
+// simbeam-control on macOS (backend/sim), or a headless browser for the hosted
+// demo (backend/browser). The session layer (rtcDispatch) only ever talks to
+// this interface; main wires the concrete backend.
 type Backend interface {
 	Companion
 	// DefaultScale is the resolution multiplier applied when the client requests

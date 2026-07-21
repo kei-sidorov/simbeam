@@ -1,19 +1,12 @@
 GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: proto build bin run run-remote test
+.PHONY: build bin run run-remote test
 
 # Broker baked into local remote-mode runs; override: make run-remote BROKER=wss://host/ws
 BROKER ?= wss://signal.simbeam.dev/ws
 # Hosted web client baked into `make bin`; override alongside BROKER for self-hosting.
 CLIENT ?= https://app.simbeam.dev/
-
-proto:
-	mkdir -p internal/idbpb
-	protoc \
-		--go_out=. --go_opt=module=github.com/kei-sidorov/simbeam \
-		--go-grpc_out=. --go-grpc_opt=module=github.com/kei-sidorov/simbeam \
-		proto/idb.proto
 
 build:
 	go build ./...

@@ -1,10 +1,8 @@
-// Package companion drives the iOS Simulator lifecycle for simbeam.
-//
-// Simulator enumeration and boot use Apple's own `xcrun simctl` — there is no
-// reason to route those through a third-party binary. idb_companion (Meta's idb,
-// MIT) is still required for the streaming pipeline (the gRPC describe /
-// screenshot / hid surface, wired up in internal/idb); Resolve/Version exist to
-// confirm it is installed.
+// Package companion drives the iOS Simulator lifecycle and screenshots for
+// simbeam, entirely through Apple's own `xcrun simctl`. Enumeration, boot,
+// shutdown, shake and full-resolution screenshots are all native toolchain
+// work — nothing here depends on idb_companion (video and input now go through
+// simbeam-control; see internal/backend/sim).
 package companion
 
 import (
@@ -12,20 +10,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
 )
 
-// DefaultBinary is the idb_companion executable name resolved against PATH.
-const DefaultBinary = "idb_companion"
-
 // DefaultSimctl is the launcher used to reach simctl. `xcrun simctl <args>`
 // resolves the active toolchain's simctl, so no absolute path is needed.
 const DefaultSimctl = "xcrun"
 
-// Simulator is one iOS Simulator target as reported by `idb_companion --list 1`.
-// Fields mirror the JSON keys emitted by idb_companion v1.1.8.
+// Simulator is one iOS Simulator target as reported by `xcrun simctl list`.
 type Simulator struct {
 	UDID         string `json:"udid"`
 	Name         string `json:"name"`
@@ -39,38 +34,15 @@ type Simulator struct {
 // Booted reports whether the simulator is currently running.
 func (s Simulator) Booted() bool { return strings.EqualFold(s.State, "Booted") }
 
-// Version is the build information reported by `idb_companion --version`.
-type Version struct {
-	BuildTime string `json:"build_time"`
-	BuildDate string `json:"build_date"`
-}
-
-// String renders the version as "Aug 12 2022 08:41:50".
-func (v Version) String() string {
-	return strings.TrimSpace(v.BuildDate + " " + v.BuildTime)
-}
-
-// Client drives simulator lifecycle (via simctl) and confirms idb_companion
-// is present (for the streaming pipeline).
+// Client drives simulator lifecycle and screenshots via simctl.
 type Client struct {
-	// Binary is the path or name of the idb_companion executable. Empty means
-	// DefaultBinary resolved against PATH.
-	Binary string
-	// Simctl is the launcher used for List/Boot. Empty means DefaultSimctl
+	// Simctl is the launcher used to reach simctl. Empty means DefaultSimctl
 	// ("xcrun"). Overridable in tests.
 	Simctl string
 }
 
-// New returns a Client that resolves idb_companion from PATH and reaches
-// simctl via xcrun.
-func New() *Client { return &Client{Binary: DefaultBinary, Simctl: DefaultSimctl} }
-
-func (c *Client) binary() string {
-	if c.Binary == "" {
-		return DefaultBinary
-	}
-	return c.Binary
-}
+// New returns a Client that reaches simctl via xcrun.
+func New() *Client { return &Client{Simctl: DefaultSimctl} }
 
 func (c *Client) simctl() string {
 	if c.Simctl == "" {
@@ -79,35 +51,30 @@ func (c *Client) simctl() string {
 	return c.Simctl
 }
 
-// Resolve returns the absolute path to the idb_companion binary, or an error
-// if it cannot be found.
-func (c *Client) Resolve() (string, error) {
-	path, err := exec.LookPath(c.binary())
+// Screenshot captures a full-resolution PNG of the given simulator via
+// `simctl io <udid> screenshot`. simctl refuses to write to stdout (it treats
+// "-" as a filename on a read-only volume), so the frame is captured to a temp
+// file and read back.
+func (c *Client) Screenshot(ctx context.Context, udid string) ([]byte, error) {
+	f, err := os.CreateTemp("", "simbeam-shot-*.png")
 	if err != nil {
-		return "", fmt.Errorf("idb_companion not found (install with `brew install idb-companion`): %w", err)
+		return nil, fmt.Errorf("screenshot temp file: %w", err)
 	}
-	return path, nil
-}
+	path := f.Name()
+	_ = f.Close()
+	defer os.Remove(path)
 
-// Version runs `idb_companion --version` and parses its JSON output.
-func (c *Client) Version(ctx context.Context) (Version, error) {
-	out, err := c.run(ctx, "--version")
+	if _, err := c.runSimctl(ctx, "io", udid, "screenshot", "--type=png", path); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return Version{}, err
+		return nil, fmt.Errorf("screenshot read: %w", err)
 	}
-	// idb_companion may print an objc class-collision warning before the JSON,
-	// so scan for the first line that parses as a Version object.
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var v Version
-		if err := json.Unmarshal([]byte(line), &v); err == nil && (v.BuildDate != "" || v.BuildTime != "") {
-			return v, nil
-		}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("screenshot %s: empty capture", udid)
 	}
-	return Version{}, fmt.Errorf("could not parse version from idb_companion output")
+	return data, nil
 }
 
 // List runs `xcrun simctl list -j devices available` and returns the available
@@ -247,24 +214,6 @@ func (c *Client) Shutdown(ctx context.Context, udid string) error {
 func (c *Client) Shake(ctx context.Context, udid string) error {
 	_, err := c.runSimctl(ctx, "spawn", udid, "notifyutil", "-p", "com.apple.UIKit.SimulatorShake")
 	return err
-}
-
-// run executes idb_companion with the given args and returns its stdout. The
-// objc warning and CoreSimulator diagnostics are emitted on stderr, which is
-// only surfaced when the command fails.
-func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, c.binary(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg != "" {
-			return nil, fmt.Errorf("idb_companion %s: %w: %s", strings.Join(args, " "), err, msg)
-		}
-		return nil, fmt.Errorf("idb_companion %s: %w", strings.Join(args, " "), err)
-	}
-	return stdout.Bytes(), nil
 }
 
 // runSimctl executes `<simctl-launcher> simctl <args>` and returns stdout,
