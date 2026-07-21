@@ -60,20 +60,22 @@ homebrew_casks:
     homepage: "https://github.com/kei-sidorov/simbeam"
     description: "simbeam daemon — stream an iOS simulator from Mac to iPad"
     dependencies:
-      # idb-companion is NOT in homebrew-core — it lives in Meta's facebook/fb
-      # tap. A bare "idb-companion" only resolves on a machine that already
-      # tapped facebook/fb (e.g. the author's), so a fresh Mac saw "No available
-      # formula". The owner/tap/formula form makes brew auto-tap it; the caveat
-      # below documents the tap as a fallback in case auto-tap misbehaves.
-      - formula: facebook/fb/idb-companion
+      # idb-companion is NOT in homebrew-core — upstream it lives in Meta's
+      # facebook/fb tap. Homebrew refuses to auto-tap third-party taps for a
+      # dependency (security), even with the fully-qualified owner/tap/formula
+      # name — so a fresh Mac failed with "This command requires the tap
+      # facebook/fb" before the binary ever downloaded. Fix: we vendor a mirror
+      # of Meta's formula into OUR tap (Formula/idb-companion.rb in
+      # homebrew-simbeam). That tap is already tapped by the time this cask
+      # installs, so the dependency resolves and idb auto-installs — no extra
+      # `brew tap` for the user. Keep the mirror's url/sha256 in sync with
+      # Meta's on idb bumps (we're pinned to 1.1.8 per CLAUDE.md).
+      - formula: kei-sidorov/simbeam/idb-companion
       - formula: ffmpeg
     caveats: |
       simbeamd is shipped as an unsigned binary. The cask's post-install hook
       strips the macOS quarantine attribute so Gatekeeper should not block it.
       simbeamd shells out to idb_companion (simulators) and ffmpeg (h264_videotoolbox).
-
-      idb_companion comes from Meta's tap. If install fails to find it, run:
-        brew tap facebook/fb
     hooks:
       post:
         install: |

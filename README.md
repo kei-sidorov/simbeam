@@ -56,7 +56,8 @@ The protocol is open; the moat is client UX and managed cloud infrastructure.
 ## Install
 
 The daemon ships as a Homebrew cask (an unsigned, prebuilt binary; the cask strips the
-macOS quarantine flag post-install). It pulls `idb-companion` and `ffmpeg` as dependencies:
+macOS quarantine flag post-install). It auto-installs `ffmpeg` and `idb_companion` as
+dependencies — one command, no extra taps:
 
 ```bash
 brew install --cask kei-sidorov/simbeam/simbeamd
@@ -64,6 +65,11 @@ simbeamd version
 ```
 
 Update later with `brew upgrade --cask simbeamd`.
+
+> `idb_companion` isn't in homebrew-core (it's Meta's, in the `facebook/fb` tap), and
+> Homebrew won't auto-tap a third-party tap for a dependency. So the tap vendors a mirror
+> of its formula (`Formula/idb-companion.rb` in `homebrew-simbeam`) and the cask depends on
+> `kei-sidorov/simbeam/idb-companion` — already present when the cask installs.
 
 ## Quick start
 
@@ -128,7 +134,8 @@ Self-hosting is a documented, secrets-free path: VPS + systemd, broker + coturn 
 ## Requirements
 
 - macOS with **Xcode / Command Line Tools** — required for the simulators themselves.
-- **`idb_companion`** — installed automatically by the cask, or `brew install idb-companion`.
+- **`idb_companion`** — installed automatically by the cask (vendored mirror of Meta's
+  formula, see Install), or `brew tap facebook/fb && brew install idb-companion`.
 - **`ffmpeg`** with `h264_videotoolbox` — installed automatically by the cask, or `brew install ffmpeg`.
 
 For browser playback, **Chrome** is recommended (`jitterBufferTarget=0` for lower latency;
