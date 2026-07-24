@@ -8,6 +8,8 @@ WebRTC link. The Mac makes only outbound connections — **zero open ports**.
 
 > **Simulators only.** Real devices are explicitly out of scope ([why](docs/ARCHITECTURE.md)).
 
+**[Get the iOS app](https://apps.apple.com/app/simbeam/id6788377942)** · **[simbeam.dev](https://simbeam.dev)**
+
 ---
 
 ## Install
