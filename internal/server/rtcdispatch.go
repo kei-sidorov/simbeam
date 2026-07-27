@@ -86,7 +86,7 @@ func (d *rtcDispatch) handle(data []byte) {
 	case "detach":
 		d.stopAttachment()
 		d.reply(ctrlReply{Type: "detached"})
-	case "tap", "home", "swipe", "key":
+	case "tap", "touch", "home", "swipe", "key", "app_switcher":
 		d.doInput(m)
 	case "shake":
 		d.doShake()

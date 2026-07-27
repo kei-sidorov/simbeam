@@ -72,8 +72,12 @@ func (f *feed) Input(_ context.Context, in server.Input) {
 	switch in.Type {
 	case "tap":
 		f.ctl.Tap(in.X, in.Y)
+	case "touch":
+		f.ctl.Touch(in.Action, in.X, in.Y)
 	case "home":
 		f.ctl.Home()
+	case "app_switcher":
+		f.ctl.AppSwitcher()
 	case "swipe":
 		dur := in.Duration
 		if dur <= 0 {

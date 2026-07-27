@@ -73,6 +73,41 @@ func TestControlSwipeScalesAndRoundsDuration(t *testing.T) {
 	}
 }
 
+// TestControlTouchScalesAndClamps mirrors the tap contract for the streamed
+// touch phases: same normalized→point mapping, action forwarded verbatim. An
+// out-of-bounds up still clamps into the screen — simbeam-control releases the
+// finger at the last valid point.
+func TestControlTouchScalesAndClamps(t *testing.T) {
+	dims := controlDims{widthPoints: 402, heightPoints: 874}
+	cases := []struct {
+		action               string
+		nx, ny, wantX, wantY float64
+	}{
+		{"down", 0.5, 0.5, 201, 437},
+		{"move", 0, 1, 0, 874},
+		{"up", -0.5, 2.0, 0, 874}, // clamped into [0,1]
+	}
+	for _, tc := range cases {
+		c, buf := testControl(dims)
+		c.Touch(tc.action, tc.nx, tc.ny)
+		m := decodeLine(t, buf)
+		if m["type"] != "touch" || m["action"] != tc.action {
+			t.Errorf("Touch(%s) type/action = %v/%v", tc.action, m["type"], m["action"])
+		}
+		if m["x"] != tc.wantX || m["y"] != tc.wantY {
+			t.Errorf("Touch(%s,%v,%v) = (%v,%v), want (%v,%v)", tc.action, tc.nx, tc.ny, m["x"], m["y"], tc.wantX, tc.wantY)
+		}
+	}
+}
+
+func TestControlAppSwitcher(t *testing.T) {
+	c, buf := testControl(controlDims{})
+	c.AppSwitcher()
+	if m := decodeLine(t, buf); m["type"] != "app_switcher" {
+		t.Errorf("AppSwitcher type = %v, want app_switcher", m["type"])
+	}
+}
+
 func TestControlHomeAndKey(t *testing.T) {
 	c, buf := testControl(controlDims{})
 	c.Home()

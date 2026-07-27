@@ -8,8 +8,9 @@ import (
 // controlMsg is an inbound message from the client — over the WebRTC "control"
 // DataChannel.
 type controlMsg struct {
-	Type     string  `json:"type"` // tap|home|swipe|key|shake|boot|attach|detach|shutdown
-	UDID     string  `json:"udid"` // boot, attach, shutdown
+	Type     string  `json:"type"`   // tap|touch|home|swipe|key|shake|app_switcher|boot|attach|detach|shutdown
+	UDID     string  `json:"udid"`   // boot, attach, shutdown
+	Action   string  `json:"action"` // touch: down|move|up
 	X        float64 `json:"x"`
 	Y        float64 `json:"y"`
 	X1       float64 `json:"x1"`
@@ -29,8 +30,9 @@ type controlMsg struct {
 // fields verbatim; management fields like UDID are handled by rtcDispatch).
 func (m controlMsg) input() Input {
 	return Input{
-		Type: m.Type,
-		X:    m.X, Y: m.Y,
+		Type:   m.Type,
+		Action: m.Action,
+		X:      m.X, Y: m.Y,
 		X1: m.X1, Y1: m.Y1, X2: m.X2, Y2: m.Y2,
 		Duration: m.Duration,
 		Key:      m.Key,
@@ -43,8 +45,17 @@ func parseControl(data []byte) (controlMsg, error) {
 		return m, fmt.Errorf("bad control json: %w", err)
 	}
 	switch m.Type {
-	case "tap", "home", "swipe", "key", "shake", "boot", "attach", "detach", "shutdown":
+	case "tap", "home", "swipe", "key", "shake", "app_switcher", "boot", "attach", "detach", "shutdown":
 		return m, nil
+	case "touch":
+		// action is an enum like type: reject garbage here rather than hand the
+		// companion a phase it never defined.
+		switch m.Action {
+		case "down", "move", "up":
+			return m, nil
+		default:
+			return m, fmt.Errorf("unknown touch action %q", m.Action)
+		}
 	default:
 		return m, fmt.Errorf("unknown control type %q", m.Type)
 	}

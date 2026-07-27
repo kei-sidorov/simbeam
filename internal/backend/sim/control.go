@@ -294,6 +294,30 @@ func (c *control) Swipe(nx1, ny1, nx2, ny2, duration float64) {
 		int(math.Round(duration * 1000))})
 }
 
+// Touch forwards one phase of a client-driven touch stream (down/move/up) at a
+// point scaled like Tap's. Trajectory and pacing belong to the client; the
+// stuck-finger protections (re-down releases the previous touch, EOF releases a
+// hanging one, tap/swipe suppressed while the stream finger is down) live in
+// simbeam-control, so this stays a dumb forward.
+func (c *control) Touch(action string, nx, ny float64) {
+	d := c.getDims()
+	c.writeCmd(struct {
+		Type   string  `json:"type"`
+		Action string  `json:"action"`
+		X      float64 `json:"x"`
+		Y      float64 `json:"y"`
+	}{"touch", action, clamp01(nx) * d.widthPoints, clamp01(ny) * d.heightPoints})
+}
+
+// AppSwitcher opens the app switcher. The double Home press runs as one
+// serialized gesture inside simbeam-control, so the press window is guaranteed
+// without the client timing two "home"s itself.
+func (c *control) AppSwitcher() {
+	c.writeCmd(struct {
+		Type string `json:"type"`
+	}{"app_switcher"})
+}
+
 // Home presses the Home button.
 func (c *control) Home() {
 	c.writeCmd(struct {

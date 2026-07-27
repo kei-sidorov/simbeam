@@ -286,13 +286,20 @@ The client sends:
 | attach  | `{"type":"attach","udid":"<udid>","scale":<0.25–1.0>,"bitrate":<bits/s>}` | start streaming this simulator's screen; `scale`/`bitrate` optional, see [Video quality](#video-quality) |
 | detach  | `{"type":"detach"}` | stop streaming |
 | tap     | `{"type":"tap","x":0.5,"y":0.5}` | tap at normalized [0,1] coordinates |
+| touch   | `{"type":"touch","action":"down"\|"move"\|"up","x":..,"y":..}` | one phase of a client-driven touch stream: trajectory and pacing are the client's (curved swipes, long-press, drag with pauses). Single-finger only; while the stream finger is down, `tap`/`swipe` are dropped by the companion |
 | swipe   | `{"type":"swipe","x1":..,"y1":..,"x2":..,"y2":..,"duration":<sec>}` | drag |
 | home    | `{"type":"home"}` | press the Home button |
+| app_switcher | `{"type":"app_switcher"}` | open the app switcher (the double Home press is serialized inside the companion, so its timing window is guaranteed) |
 | key     | `{"type":"key","key":"<KeyboardEvent.key>"}` | a hardware key press |
 | shake   | `{"type":"shake"}` | shake the attached simulator (e.g. to trigger Shake to Undo); fire-and-forget, no reply |
 
 Coordinates are **normalized 0–1** relative to the displayed frame; the daemon scales them to the
-simulator's logical points. (Keyboard input sends physical HID key codes — the actual character is
+simulator's logical points.
+
+`touch` rides this same lossy channel, so clients must budget for drops: coalesce `move` events
+client-side (a lost move only dents the trajectory), and treat `up` as the one message that
+matters — send it redundantly if needed. The companion self-heals the worst case: a re-`down`
+first releases the previous finger, and process EOF releases a hanging one. (Keyboard input sends physical HID key codes — the actual character is
 chosen by the keyboard layout active *inside the simulator*.)
 
 The daemon replies on the same channel:

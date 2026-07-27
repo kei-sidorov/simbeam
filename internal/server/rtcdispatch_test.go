@@ -346,6 +346,31 @@ func TestInputRoutedToFeed(t *testing.T) {
 	}
 }
 
+// touch and app_switcher ride the same gesture path as tap/key: routed to the
+// live feed verbatim, no reply.
+func TestTouchAndAppSwitcherRoutedToFeed(t *testing.T) {
+	var out []ctrlReply
+	d := newTestDispatch(&stubComp{}, &out)
+	feed := &stubFeed{}
+	d.att = &attachment{cancel: func() {}, feed: feed, udid: "ABC"}
+
+	d.handle([]byte(`{"type":"touch","action":"down","x":0.25,"y":0.75}`))
+	d.handle([]byte(`{"type":"app_switcher"}`))
+
+	if len(feed.inputs) != 2 {
+		t.Fatalf("want 2 inputs routed to feed, got %+v", feed.inputs)
+	}
+	if in := feed.inputs[0]; in.Type != "touch" || in.Action != "down" || in.X != 0.25 || in.Y != 0.75 {
+		t.Fatalf("touch not routed verbatim, got %+v", in)
+	}
+	if in := feed.inputs[1]; in.Type != "app_switcher" {
+		t.Fatalf("app_switcher not routed, got %+v", in)
+	}
+	if len(out) != 0 {
+		t.Fatalf("gestures should produce no reply, got %+v", out)
+	}
+}
+
 func TestInputBeforeAttachIgnored(t *testing.T) {
 	var out []ctrlReply
 	d := newTestDispatch(&stubComp{}, &out)

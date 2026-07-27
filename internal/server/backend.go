@@ -108,11 +108,13 @@ type Feed interface {
 	Close() error
 }
 
-// Input is one user gesture routed to the live Feed. Tap/swipe coordinates are
-// normalized to [0,1] of the displayed frame; each backend scales them into its
-// own coordinate space. Key is a browser KeyboardEvent.key string.
+// Input is one user gesture routed to the live Feed. Tap/touch/swipe
+// coordinates are normalized to [0,1] of the displayed frame; each backend
+// scales them into its own coordinate space. Key is a browser
+// KeyboardEvent.key string.
 type Input struct {
-	Type           string // tap|home|swipe|key
+	Type           string // tap|touch|home|swipe|key|app_switcher
+	Action         string // touch: down|move|up
 	X, Y           float64
 	X1, Y1, X2, Y2 float64
 	Duration       float64 // swipe duration in seconds; <=0 → backend default

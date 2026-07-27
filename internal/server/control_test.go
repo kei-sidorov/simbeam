@@ -19,6 +19,38 @@ func TestParseControlHome(t *testing.T) {
 	}
 }
 
+func TestParseControlTouch(t *testing.T) {
+	for _, action := range []string{"down", "move", "up"} {
+		m, err := parseControl([]byte(`{"type":"touch","action":"` + action + `","x":0.25,"y":0.75}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.Type != "touch" || m.Action != action || m.X != 0.25 || m.Y != 0.75 {
+			t.Fatalf("unexpected: %+v", m)
+		}
+	}
+}
+
+// touch's action is an enum like type — a phase the companion never defined
+// must be rejected at parse, not forwarded.
+func TestParseControlTouchBadAction(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"touch","action":"cancel","x":0.5,"y":0.5}`,
+		`{"type":"touch","x":0.5,"y":0.5}`,
+	} {
+		if _, err := parseControl([]byte(in)); err == nil {
+			t.Fatalf("want error for %s, got nil", in)
+		}
+	}
+}
+
+func TestParseControlAppSwitcher(t *testing.T) {
+	m, err := parseControl([]byte(`{"type":"app_switcher"}`))
+	if err != nil || m.Type != "app_switcher" {
+		t.Fatalf("unexpected: %+v err %v", m, err)
+	}
+}
+
 func TestParseControlBadJSON(t *testing.T) {
 	if _, err := parseControl([]byte(`not json`)); err == nil {
 		t.Fatal("expected error")
