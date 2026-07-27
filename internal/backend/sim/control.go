@@ -47,6 +47,38 @@ func ResolveControl() (string, error) {
 	return path, nil
 }
 
+// requiredControlProtocol is the minimum simbeam-control protocol this daemon
+// depends on: 2 = streamed touch + app_switcher. Bump it whenever the daemon
+// starts requiring a new helper capability — brew cannot pin dependency
+// versions, so this preflight is the only thing standing between an upgraded
+// daemon and a stale helper silently dropping commands.
+const requiredControlProtocol = 2
+
+// CheckControlProtocol preflights `simbeam-control --protocol` and fails with
+// an actionable error when the helper is older than the daemon requires
+// (mirrors companion.CheckToolchain). A helper that predates the flag exits
+// non-zero on the unknown argument — that is protocol 1.
+func CheckControlProtocol(ctx context.Context, bin string) error {
+	out, err := exec.CommandContext(ctx, bin, "--protocol").Output()
+	if v := controlProtocol(out, err); v < requiredControlProtocol {
+		return fmt.Errorf("simbeam-control at %s speaks control protocol %d, this simbeamd needs >= %d — update it with `brew upgrade simbeam-control`", bin, v, requiredControlProtocol)
+	}
+	return nil
+}
+
+// controlProtocol maps the --protocol invocation outcome to a version: the
+// printed integer on success, 1 for any failure or unparsable output.
+func controlProtocol(out []byte, err error) int {
+	if err != nil {
+		return 1
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || v < 1 {
+		return 1
+	}
+	return v
+}
+
 // controlDims is the geometry from simbeam-control's stderr handshake: point
 // dimensions (for scaling normalized input) and full-resolution pixel
 // dimensions (reported to the client for aspect/coordinate mapping).

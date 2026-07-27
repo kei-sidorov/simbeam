@@ -171,6 +171,9 @@ func runServe(argv []string) error {
 	if err != nil {
 		return err
 	}
+	if err := sim.CheckControlProtocol(context.Background(), path); err != nil {
+		return err
+	}
 	hostName, osVersion := macHostInfo()
 	srv := server.New(sim.New(c, path), *webDir).WithHost(hostName, osVersion).WithVerbose(*verbose)
 

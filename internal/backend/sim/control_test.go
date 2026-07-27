@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -119,6 +120,31 @@ func TestControlHomeAndKey(t *testing.T) {
 	m := decodeLine(t, buf)
 	if m["type"] != "key" || m["usage"] != float64(4) || m["shift"] != true {
 		t.Errorf("Key(4,true) = %v, want type=key usage=4 shift=true", m)
+	}
+}
+
+// TestControlProtocolMapping pins the --protocol preflight contract: a helper
+// that predates the flag dies on the unknown argument (any exec error → 1),
+// garbage output is 1, and a printed integer wins. Brew cannot pin dependency
+// versions, so this mapping is what catches a stale helper after a daemon
+// upgrade.
+func TestControlProtocolMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		err  error
+		want int
+	}{
+		{"new helper prints version", "2\n", nil, 2},
+		{"future version passes through", "7\n", nil, 7},
+		{"pre-flag helper exits non-zero", "", errors.New("exit status 2"), 1},
+		{"garbage output", "Usage: simbeam-control ...", nil, 1},
+		{"nonsense zero", "0\n", nil, 1},
+	}
+	for _, tc := range cases {
+		if got := controlProtocol([]byte(tc.out), tc.err); got != tc.want {
+			t.Errorf("%s: controlProtocol = %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }
 

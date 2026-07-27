@@ -147,7 +147,9 @@ Self-hosting is a documented, secrets-free path: VPS + systemd, broker + coturn 
 - macOS with a **full Xcode** install — required both for the simulators themselves and for
   `simbeam-control` (private CoreSimulator/SimulatorKit APIs).
 - **`simbeam-control`** in `PATH` — installed automatically by the cask (from this tap), or
-  `brew install kei-sidorov/simbeam/simbeam-control`.
+  `brew install kei-sidorov/simbeam/simbeam-control`. The daemon preflights the helper's
+  `--protocol` at startup and refuses to run against one older than it requires — if it asks,
+  `brew upgrade simbeam-control`.
 
 For browser playback, **Chrome** is recommended (`jitterBufferTarget=0` for lower latency;
 Safari ignores the hint but still plays).
