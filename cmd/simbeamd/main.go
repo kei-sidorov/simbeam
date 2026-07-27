@@ -30,6 +30,7 @@ import (
 	"github.com/kei-sidorov/simbeam/internal/companion"
 	"github.com/kei-sidorov/simbeam/internal/server"
 	"github.com/kei-sidorov/simbeam/internal/signal"
+	"github.com/kei-sidorov/simbeam/internal/updatecheck"
 	"github.com/mdp/qrterminal/v3"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -161,6 +162,7 @@ func runServe(argv []string) error {
 	clientsPath := fs.String("clients", defaultStatePath("clients.json"), "path to the pinned-clients store")
 	pairTTL := fs.Duration("pair-ttl", 5*time.Minute, "how long an enrollment window stays open after pressing P")
 	verbose := fs.Bool("v", false, "verbose logging: log every broker reconnect attempt, not just offline/online transitions")
+	noUpdateCheck := fs.Bool("no-update-check", false, "disable the daily check of GitHub Releases for a newer simbeamd")
 	_ = fs.Parse(argv)
 
 	c := companion.New()
@@ -176,6 +178,21 @@ func runServe(argv []string) error {
 	}
 	hostName, osVersion := macHostInfo()
 	srv := server.New(sim.New(c, path), *webDir).WithHost(hostName, osVersion).WithVerbose(*verbose)
+
+	// Update check: best-effort and informational only — a hit prints the brew
+	// command and stamps future hellos, it never blocks or fails serve. Skipped
+	// for dev builds (nothing meaningful to compare against a release tag).
+	if !*noUpdateCheck && version != "dev" {
+		chk := &updatecheck.Checker{
+			Repo:      "kei-sidorov/simbeam",
+			Current:   version,
+			CachePath: defaultStatePath("update-check.json"),
+		}
+		go chk.Run(context.Background(), func(latest string) {
+			fmt.Printf("simbeamd %s → %s available: brew upgrade --cask simbeamd && brew upgrade simbeam-control\n", version, latest)
+			srv.SetLatestVersion(latest)
+		})
+	}
 
 	if *signalURL != "" {
 		return runRemote(srv, *signalURL, *clientURL, *addr, *webDir, *identityPath, *clientsPath, *pairTTL)

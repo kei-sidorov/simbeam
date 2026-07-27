@@ -306,7 +306,7 @@ The daemon replies on the same channel:
 
 | Reply | Shape |
 |-------|-------|
-| hello    | `{"type":"hello","name":"<Mac name>","osVersion":"<macOS version>","paired":true}` |
+| hello    | `{"type":"hello","name":"<Mac name>","osVersion":"<macOS version>","paired":true,"latestVersion":"<semver>"}` — `latestVersion` appears only when the daemon's daily GitHub-Releases check found a newer simbeamd; clients may show an "update the Mac side" nudge (`brew upgrade`) |
 | booted   | `{"type":"booted","udid":"<udid>"}` |
 | shutdown | `{"type":"shutdown","udid":"<udid>"}` (if it was the streaming sim, a `detached` is sent first) |
 | attached | `{"type":"attached","w":<px>,"h":<px>}` (the simulator's **native** screen size — see below) |

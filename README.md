@@ -151,6 +151,11 @@ Self-hosting is a documented, secrets-free path: VPS + systemd, broker + coturn 
   `--protocol` at startup and refuses to run against one older than it requires — if it asks,
   `brew upgrade simbeam-control`.
 
+Release builds of `simbeamd serve` check GitHub Releases for a newer version once a day
+(cached in `~/.simbeam/update-check.json`) and, when one exists, print the `brew upgrade`
+command and tell paired clients so they can show a nudge. It only informs — nothing updates
+itself. Opt out with `-no-update-check`.
+
 For browser playback, **Chrome** is recommended (`jitterBufferTarget=0` for lower latency;
 Safari ignores the hint but still plays).
 

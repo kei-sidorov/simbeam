@@ -9,7 +9,10 @@
 // simulators on macOS, a headless browser for the hosted demo.
 package server
 
-import "net/http"
+import (
+	"net/http"
+	"sync/atomic"
+)
 
 // Server drives the WebRTC rendezvous over a Backend.
 type Server struct {
@@ -19,6 +22,11 @@ type Server struct {
 	hostName  string                    // host display name, pushed in the hello (e.g. "Kirill's MacBook Pro"); "" → omitted
 	osVersion string                    // host OS version, pushed in the hello (e.g. "26.5"); "" → omitted
 	verbose   bool                      // -v: log every broker reconnect attempt, not just transitions
+
+	// latest is the newer-release version (bare semver) found by the update
+	// checker, or "" — read per-hello, written from the checker's goroutine
+	// while sessions run, hence atomic.
+	latest atomic.Value
 }
 
 // New creates a Server. webDir is served at / when non-empty.
@@ -38,6 +46,18 @@ func (s *Server) WithHost(name, osVersion string) *Server {
 // broker reconnect attempt (cause + backoff); when false it logs only offline/
 // online transitions, so routine sleep/wake churn stays quiet.
 func (s *Server) WithVerbose(v bool) *Server { s.verbose = v; return s }
+
+// SetLatestVersion records that a newer daemon release exists (bare semver,
+// e.g. "0.11.0"). Every hello sent from then on carries it, so clients can
+// nudge the user to upgrade the Mac side — the daemon itself never updates
+// anything. Safe to call at any time.
+func (s *Server) SetLatestVersion(v string) { s.latest.Store(v) }
+
+// latestVersion returns the last SetLatestVersion value, or "".
+func (s *Server) latestVersion() string {
+	v, _ := s.latest.Load().(string)
+	return v
+}
 
 // OnEnroll registers a callback fired (with the client's public key) the moment a
 // not-yet-pinned client completes pairing — i.e. the single-use window was just

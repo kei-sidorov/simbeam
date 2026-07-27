@@ -19,6 +19,9 @@ type ctrlReply struct {
 	Name      string `json:"name,omitempty"`      // hello: Mac display name
 	OSVersion string `json:"osVersion,omitempty"` // hello: macOS version
 	Paired    bool   `json:"paired,omitempty"`    // hello: this client's key is pinned (enrollment confirmed)
+	// LatestVersion, when set in a hello, says a newer simbeamd release exists
+	// (bare semver) — the client may nudge the user to upgrade the Mac side.
+	LatestVersion string `json:"latestVersion,omitempty"`
 }
 
 // rtcDispatch is the per-session control plane. It owns at most one video
@@ -42,6 +45,10 @@ type rtcDispatch struct {
 	writeFrame   func([]byte, time.Duration) error
 	hostName     string // Mac display name, sent in the hello
 	osVersion    string // macOS version, sent in the hello
+	// latestVersion reports a newer available daemon release for the hello, or
+	// "". A func, not a string: the update checker may learn of a release while
+	// the daemon runs, and later sessions should carry it. nil → never.
+	latestVersion func() string
 
 	mu  sync.Mutex
 	att *attachment
@@ -68,7 +75,11 @@ type rtcDispatch struct {
 // optimistically on scan uses this to confirm the pairing actually took (a dial
 // that drops before the hello means the pin is unconfirmed).
 func (d *rtcDispatch) sendHello() {
-	d.reply(ctrlReply{Type: "hello", Name: d.hostName, OSVersion: d.osVersion, Paired: true})
+	var latest string
+	if d.latestVersion != nil {
+		latest = d.latestVersion()
+	}
+	d.reply(ctrlReply{Type: "hello", Name: d.hostName, OSVersion: d.osVersion, Paired: true, LatestVersion: latest})
 }
 
 func (d *rtcDispatch) handle(data []byte) {

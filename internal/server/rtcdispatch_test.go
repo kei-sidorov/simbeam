@@ -297,6 +297,30 @@ func TestSendHelloCarriesHostInfo(t *testing.T) {
 	if !out[0].Paired {
 		t.Fatalf("hello must carry paired:true (pin-ack), got %+v", out[0])
 	}
+	// No update checker wired (nil func) → no latestVersion in the hello.
+	if out[0].LatestVersion != "" {
+		t.Fatalf("hello without a checker must omit latestVersion, got %q", out[0].LatestVersion)
+	}
+}
+
+// The hello reads latestVersion at send time (a func, not a snapshot): a
+// release discovered mid-run must reach sessions opened after the discovery.
+func TestSendHelloCarriesLatestVersion(t *testing.T) {
+	var out []ctrlReply
+	d := newTestDispatch(&stubComp{}, &out)
+	latest := ""
+	d.latestVersion = func() string { return latest }
+
+	d.sendHello()
+	latest = "0.11.0"
+	d.sendHello()
+
+	if out[0].LatestVersion != "" {
+		t.Fatalf("first hello should omit latestVersion, got %q", out[0].LatestVersion)
+	}
+	if out[1].LatestVersion != "0.11.0" {
+		t.Fatalf("second hello latestVersion = %q, want 0.11.0", out[1].LatestVersion)
+	}
 }
 
 // doAttach must ask the backend for a feed and reply "attached" with the feed's
