@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kei-sidorov/simbeam/internal/companion"
 	"github.com/kei-sidorov/simbeam/internal/encoder"
@@ -101,6 +102,12 @@ func (c *stubComp) Shake(_ context.Context, udid string) error {
 	return c.shakeErr
 }
 
+// replyMu guards every ctrlReply sink newTestDispatch writes to. Attach is
+// asynchronous, so its terminal reply arrives on another goroutine; tests that
+// wait for one go through waitReplies, whose lock acquisition also gives them
+// the happens-before that makes reading the sink afterwards safe.
+var replyMu sync.Mutex
+
 // newTestDispatch returns a dispatcher whose replies are captured into *out.
 func newTestDispatch(backend Backend, out *[]ctrlReply) *rtcDispatch {
 	return &rtcDispatch{
@@ -109,9 +116,38 @@ func newTestDispatch(backend Backend, out *[]ctrlReply) *rtcDispatch {
 		send: func(b []byte) {
 			var r ctrlReply
 			_ = json.Unmarshal(b, &r)
+			replyMu.Lock()
 			*out = append(*out, r)
+			replyMu.Unlock()
 		},
 	}
+}
+
+// waitReplies blocks until n replies have been captured and returns them, or
+// fails the test. Anything asynchronous the dispatcher does is bounded (see
+// AttachTimeout), so a test that waits forever is a test that found a bug.
+func waitReplies(t *testing.T, out *[]ctrlReply, n int) []ctrlReply {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		replyMu.Lock()
+		got := append([]ctrlReply(nil), *out...)
+		replyMu.Unlock()
+		if len(got) >= n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d replies, got %+v", n, got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// replies snapshots what has been captured so far, without waiting.
+func replies(out *[]ctrlReply) []ctrlReply {
+	replyMu.Lock()
+	defer replyMu.Unlock()
+	return append([]ctrlReply(nil), *out...)
 }
 
 // list/sims ride the reliable "bulk" channel, not control (issue #2): the sims
@@ -356,8 +392,10 @@ func TestSendHelloCarriesLatestVersion(t *testing.T) {
 	}
 }
 
-// doAttach must ask the backend for a feed and reply "attached" with the feed's
-// screen dimensions.
+// doAttach acknowledges with "attaching" and then, once the backend hands over a
+// feed, replies "attached" with the feed's screen dimensions. Both carry the
+// udid: with the spawn asynchronous, that is how a client with two attaches
+// outstanding tells whose outcome this is.
 func TestDoAttachRepliesWithFeedScreen(t *testing.T) {
 	var out []ctrlReply
 	c := &stubComp{feed: &stubFeed{w: 100, h: 200}}
@@ -365,20 +403,50 @@ func TestDoAttachRepliesWithFeedScreen(t *testing.T) {
 
 	d.handle([]byte(`{"type":"attach","udid":"ABC"}`))
 
-	if got := c.attaches(); len(got) != 1 || got[0] != "ABC" {
-		t.Fatalf("Attach(ABC) not called, got %v", got)
+	got := waitReplies(t, &out, 2)
+	if a := c.attaches(); len(a) != 1 || a[0] != "ABC" {
+		t.Fatalf("Attach(ABC) not called, got %v", a)
 	}
-	if len(out) != 1 || out[0].Type != "attached" || out[0].W != 100 || out[0].H != 200 {
-		t.Fatalf("want attached reply 100x200, got %+v", out)
+	if got[0].Type != "attaching" || got[0].UDID != "ABC" {
+		t.Fatalf("want attaching ack for ABC first, got %+v", got)
+	}
+	if got[1].Type != "attached" || got[1].UDID != "ABC" || got[1].W != 100 || got[1].H != 200 {
+		t.Fatalf("want attached reply ABC 100x200, got %+v", got)
 	}
 }
 
+// The ack must be synchronous — it is the client's only evidence that the
+// request was accepted, and it has to land before the channel is handed back to
+// input for the seconds the spawn takes.
+func TestDoAttachAcksBeforeSpawning(t *testing.T) {
+	var out []ctrlReply
+	spawning := make(chan struct{})
+	release := make(chan struct{})
+	d := newTestDispatch(&blockingBackend{entered: spawning, release: release}, &out)
+
+	d.handle([]byte(`{"type":"attach","udid":"ABC"}`))
+	<-spawning // the backend is in Attach, so the ack cannot have waited on it
+
+	if got := replies(&out); len(got) != 1 || got[0].Type != "attaching" {
+		t.Fatalf("want the attaching ack already sent, got %+v", got)
+	}
+	close(release)
+	waitReplies(t, &out, 2)
+}
+
+// An untyped backend failure still reaches the client as one terminal reply
+// with a machine code — the client cannot be left to grep prose.
 func TestDoAttachBackendErrorReply(t *testing.T) {
 	var out []ctrlReply
 	d := newTestDispatch(&stubComp{attachErr: errors.New("boom")}, &out)
 	d.handle([]byte(`{"type":"attach","udid":"ABC"}`))
-	if len(out) != 1 || out[0].Type != "error" {
-		t.Fatalf("want one error reply, got %+v", out)
+
+	got := waitReplies(t, &out, 2)
+	if len(got) != 2 || got[1].Type != "error" {
+		t.Fatalf("want attaching then one error, got %+v", got)
+	}
+	if got[1].Operation != "attach" || got[1].UDID != "ABC" || got[1].Code != CodeAttachFailed || got[1].Retryable {
+		t.Fatalf("want a typed non-retryable attach failure for ABC, got %+v", got[1])
 	}
 }
 
@@ -490,16 +558,30 @@ func TestDoShakeErrorIsSwallowed(t *testing.T) {
 // every binary send to model pion rejecting an oversized frame. maxMsg models
 // the peer's negotiated max-message-size: a send above it is rejected exactly as
 // pion/sctp does, so a chunker that ignores the cap fails these tests.
+//
+// mu guards the captured frames: an asynchronous attach replies on the bulk
+// channel from its own goroutine, so the accessors below double as the
+// synchronisation point for the test that reads them.
 type bulkSink struct {
+	mu      sync.Mutex
 	chunks  [][]byte
 	txt     []string
 	sendErr error
 	maxMsg  int
 }
 
+// texts snapshots the text frames captured so far.
+func (s *bulkSink) texts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.txt...)
+}
+
 // image is the reassembled payload the client would decode: the binary chunks
 // concatenated in arrival order.
 func (s *bulkSink) image() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []byte
 	for _, c := range s.chunks {
 		out = append(out, c...)
@@ -511,7 +593,7 @@ func (s *bulkSink) image() []byte {
 // assert on failures without matching the header.
 func (s *bulkSink) errors() []bulkErr {
 	var out []bulkErr
-	for _, raw := range s.txt {
+	for _, raw := range s.texts() {
 		var e bulkErr
 		if err := json.Unmarshal([]byte(raw), &e); err != nil || e.Type != "error" {
 			continue
@@ -529,7 +611,7 @@ func (s *bulkSink) errors() []bulkErr {
 func (s *bulkSink) sims() []bulkSim {
 	var bytes int
 	sawHeader := false
-	for _, raw := range s.txt {
+	for _, raw := range s.texts() {
 		var h bulkHeader
 		if err := json.Unmarshal([]byte(raw), &h); err == nil && h.Type == "sims" {
 			bytes, sawHeader = h.Bytes, true
@@ -566,11 +648,15 @@ func newBulkDispatch(backend Backend, sink *bulkSink) *rtcDispatch {
 			if len(b) > sink.maxMsg {
 				return fmt.Errorf("outbound packet larger than maximum message size: %d", sink.maxMsg)
 			}
+			sink.mu.Lock()
 			sink.chunks = append(sink.chunks, append([]byte(nil), b...))
+			sink.mu.Unlock()
 			return nil
 		},
 		sendBulkText: func(s string) error {
+			sink.mu.Lock()
 			sink.txt = append(sink.txt, s)
+			sink.mu.Unlock()
 			return nil
 		},
 		bulkMaxMsg: func() int { return sink.maxMsg },

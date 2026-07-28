@@ -8,12 +8,63 @@ import (
 	"time"
 )
 
-// ctrlReply is a downstream control message: daemon → client over the
-// "control" DataChannel.
+// Optional control features a daemon advertises in the hello's caps. A client
+// gates on membership; an absent list means a daemon too old to advertise
+// anything (≤ v0.11) and therefore the v1 gesture set only.
+const (
+	CapTouch       = "touch"        // the streamed touch phases (down/move/up)
+	CapAppSwitcher = "app_switcher" // the serialized double-Home gesture
+	// CapLifecycle says the lifecycle requests and replies (boot, restart,
+	// attach/attaching/attached, detach, shutdown, their terminal errors and
+	// stream_ended) may ride the reliable ordered "bulk" channel instead of the
+	// lossy "control" one. Unlike the other two this describes the dispatcher,
+	// not the backend, so every backend advertises it.
+	CapLifecycle = "lifecycle"
+)
+
+// Operation values in a lifecycle error reply: which request failed. A client
+// with several lifecycle requests outstanding routes the failure by this plus
+// udid, rather than by guessing from arrival order.
+const (
+	opAttach   = "attach"
+	opBoot     = "boot"
+	opRestart  = "restart"
+	opShutdown = "shutdown"
+)
+
+// Terminal lifecycle error codes the daemon itself produces. A failure that
+// came from simbeam-control carries the helper's own code instead (see
+// AttachError) — those are protocol surface there and are forwarded verbatim.
+const (
+	CodeAttachFailed   = "attach_failed"   // the backend refused the feed, with no code of its own
+	CodeAttachTimeout  = "attach_timeout"  // no feed and no typed failure within AttachTimeout
+	CodeBootFailed     = "boot_failed"     // powering the simulator on failed
+	CodeShutdownFailed = "shutdown_failed" // powering the simulator off failed
+	CodeRestartFailed  = "restart_failed"  // the shutdown+boot cycle failed
+)
+
+// restartTimeout bounds a restart's shutdown+boot cycle so the client always
+// gets a reply. `simctl boot` returns once the device reports Booted (~1s on a
+// warm machine) and shutdown is quicker still, so this is a backstop for a
+// wedged CoreSimulator, not a normal wait.
+const restartTimeout = 60 * time.Second
+
+// ctrlReply is a downstream lifecycle message: daemon → client, over "bulk"
+// when the client speaks CapLifecycle and over "control" otherwise.
 type ctrlReply struct {
-	Type      string `json:"type"` // booted|attached|detached|shutdown|hello|error
-	Msg       string `json:"msg,omitempty"`
-	UDID      string `json:"udid,omitempty"`
+	Type string `json:"type"` // booted|attaching|attached|detached|shutdown|stream_ended|hello|error
+	Msg  string `json:"msg,omitempty"`
+	UDID string `json:"udid,omitempty"`
+	// Operation names the request an error belongs to (attach|boot|restart|
+	// shutdown), so a failure can be routed to the right piece of UI.
+	Operation string `json:"operation,omitempty"`
+	// Code is the stable machine value to branch on; Msg is for humans and may
+	// be reworded freely.
+	Code string `json:"code,omitempty"`
+	// Retryable says whether re-sending the same request unchanged is worth it.
+	// Only meaningful on an error, and only false is the default — an absent
+	// field means "no".
+	Retryable bool   `json:"retryable,omitempty"`
 	W         uint64 `json:"w,omitempty"`         // frame dimensions, set in the "attached" reply
 	H         uint64 `json:"h,omitempty"`         // frame dimensions, set in the "attached" reply
 	Name      string `json:"name,omitempty"`      // hello: Mac display name
@@ -25,23 +76,25 @@ type ctrlReply struct {
 	// Version is the daemon's own version in the hello (e.g. "0.12.0", "dev").
 	Version string `json:"version,omitempty"`
 	// Caps lists the optional control features this daemon+backend forwards
-	// (e.g. "touch", "app_switcher") in the hello. Clients gate features on
-	// membership; an absent list = a daemon too old to advertise → v1 gesture
-	// set only (tap/swipe/home/key/shake).
+	// (e.g. "touch", "app_switcher", "lifecycle") in the hello. Clients gate
+	// features on membership; an absent list = a daemon too old to advertise →
+	// v1 gesture set only (tap/swipe/home/key/shake).
 	Caps []string `json:"caps,omitempty"`
 }
 
 // rtcDispatch is the per-session control plane. It owns at most one video
-// "attachment" (a live backend Feed) and routes inbound control messages:
-// management (boot/attach/detach) and input (tap/swipe/...). The simulator list
-// (list/sims) rides the reliable "bulk" channel instead — see doList (issue #2).
+// "attachment" (a live backend Feed) and routes inbound messages from two
+// channels: "control" (lossy — input, and lifecycle from clients that predate
+// CapLifecycle) and "bulk" (reliable ordered — list/screenshot/quality, and
+// lifecycle from clients that speak it).
 //
 // It depends on plain func values (send, writeFrame) rather than *rtc.Session
 // so management/input logic is unit-testable without a live pion handshake.
 //
-// handle() runs on pion's DataChannel goroutine; boot/attach block it briefly
-// (backend.Attach waits for feed readiness). Acceptable for the debug/local
-// scope — revisit if it stalls input during attach.
+// handle() runs on pion's DataChannel goroutine. Nothing on it blocks for long
+// any more: attach acknowledges and spawns asynchronously, so only boot/
+// shutdown/restart (a simctl call each) hold the goroutine, and those are what
+// the reliable channel is for.
 type rtcDispatch struct {
 	backend      Backend
 	baseCtx      context.Context
@@ -61,15 +114,20 @@ type rtcDispatch struct {
 
 	mu  sync.Mutex
 	att *attachment
-	// gen counts attach intents. An attach can run concurrently with another
-	// (quality arrives on bulk's goroutine, attach/detach on control's), and
-	// backend.Attach is slow, so an attempt compares the generation it claimed
-	// against gen before installing its feed. See claimAttach.
+	// gen counts attach intents. An attach runs asynchronously and can overlap
+	// another (quality arrives on bulk's goroutine, attach/detach on control's),
+	// so an attempt compares the generation it claimed against gen before
+	// installing its feed or reporting a failure. See claimAttach.
 	gen uint64
 	// pending is the udid of an attach in flight — after the old feed is gone
 	// and before the new one is installed. Without it that window looks idle to
 	// shutdown, which would then let the spawn race a powering-off simulator.
 	pending string
+	// bulkLifecycle records that this client sends lifecycle over "bulk", which
+	// is also where it expects unsolicited lifecycle events (stream_ended). A
+	// reply to a request always goes back on the channel that carried it; only
+	// events nobody asked for need this.
+	bulkLifecycle bool
 }
 
 // sendHello pushes the unsolicited "hello" greeting the moment the control
@@ -97,16 +155,13 @@ func (d *rtcDispatch) handle(data []byte) {
 	if err != nil {
 		return // ignore malformed/unknown
 	}
+	// Lifecycle is still accepted here for clients that predate CapLifecycle,
+	// and answered on this same lossy channel — answering on "bulk" a client
+	// that isn't listening there would be worse than the drop it risks.
+	if d.lifecycle(m, false) {
+		return
+	}
 	switch m.Type {
-	case "boot":
-		d.doBoot(m.UDID)
-	case "shutdown":
-		d.doShutdown(m.UDID)
-	case "attach":
-		d.doAttach(m.UDID, m.QualityOpts)
-	case "detach":
-		d.stopAttachment()
-		d.reply(ctrlReply{Type: "detached"})
 	case "tap", "touch", "home", "swipe", "key", "app_switcher":
 		d.doInput(m)
 	case "shake":
@@ -119,21 +174,103 @@ func (d *rtcDispatch) handle(data []byte) {
 	}
 }
 
-func (d *rtcDispatch) doBoot(udid string) {
+// lifecycle dispatches one lifecycle request, whichever channel carried it, and
+// reports whether it was one. reliable says it arrived on "bulk": the answer
+// goes back there rather than on "control", because a reply on a channel the
+// client isn't listening to is worse than no reply at all.
+func (d *rtcDispatch) lifecycle(m controlMsg, reliable bool) bool {
+	reply := d.reply
+	if reliable {
+		reply = func(v ctrlReply) {
+			// Remember the route on the first answer rather than up front: an
+			// unknown type falls through this switch untouched, and it must not
+			// convince the session that this client reads lifecycle on "bulk"
+			// — that is where its unsolicited stream_ended would then go.
+			d.mu.Lock()
+			d.bulkLifecycle = true
+			d.mu.Unlock()
+			d.replyBulk(v)
+		}
+	}
+	switch m.Type {
+	case "boot":
+		d.doBoot(m.UDID, reply)
+	case "restart":
+		d.doRestart(m.UDID, reply)
+	case "attach":
+		d.doAttach(m.UDID, m.QualityOpts, reply)
+	case "detach":
+		d.doDetach(reply)
+	case "shutdown":
+		d.doShutdown(m.UDID, reply)
+	default:
+		return false
+	}
+	return true
+}
+
+func (d *rtcDispatch) doBoot(udid string, reply func(ctrlReply)) {
 	if udid == "" {
-		d.reply(ctrlReply{Type: "error", Msg: "boot: missing udid"})
+		reply(ctrlReply{Type: "error", Operation: opBoot, Code: CodeBadRequest, Msg: "boot: missing udid"})
 		return
 	}
 	if err := d.backend.Boot(d.baseCtx, udid); err != nil {
-		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
+		reply(ctrlReply{Type: "error", Operation: opBoot, UDID: udid, Code: CodeBootFailed, Msg: err.Error()})
 		return
 	}
-	d.reply(ctrlReply{Type: "booted", UDID: udid})
+	reply(ctrlReply{Type: "booted", UDID: udid})
 }
 
-func (d *rtcDispatch) doShutdown(udid string) {
+// doRestart power-cycles a simulator and confirms with "booted", so the client
+// can attach again. It is the documented answer to a non-retryable attach
+// failure — display_not_ready above all, which means the device booted but its
+// framebuffer never appeared, a state only a fresh boot clears.
+//
+// The feed goes first, in-flight attach included: the sidecar is about to lose
+// its simulator, and an attach still spawning would race the shutdown. That
+// teardown is intentional, so it is silent — no "detached", no "stream_ended".
+// The client asked for this and is waiting on "booted", which it must read as
+// "your feed is gone; attach again".
+func (d *rtcDispatch) doRestart(udid string, reply func(ctrlReply)) {
 	if udid == "" {
-		d.reply(ctrlReply{Type: "error", Msg: "shutdown: missing udid"})
+		reply(ctrlReply{Type: "error", Operation: opRestart, Code: CodeBadRequest, Msg: "restart: missing udid"})
+		return
+	}
+	d.mu.Lock()
+	current := d.streaming(udid)
+	d.mu.Unlock()
+	if current {
+		d.stopAttachment()
+	}
+
+	// Bounded so a wedged CoreSimulator cannot swallow the reply: the client is
+	// blocked on this one, with no feed left to fall back to.
+	ctx, cancel := context.WithTimeout(d.baseCtx, restartTimeout)
+	defer cancel()
+	log.Printf("restart %s: shutting down", udid)
+	if err := d.backend.Shutdown(ctx, udid); err != nil {
+		reply(ctrlReply{Type: "error", Operation: opRestart, UDID: udid, Code: CodeRestartFailed, Msg: err.Error()})
+		return
+	}
+	log.Printf("restart %s: booting", udid)
+	if err := d.backend.Boot(ctx, udid); err != nil {
+		reply(ctrlReply{Type: "error", Operation: opRestart, UDID: udid, Code: CodeRestartFailed, Msg: err.Error()})
+		return
+	}
+	log.Printf("restart %s: booted", udid)
+	reply(ctrlReply{Type: "booted", UDID: udid})
+}
+
+// doDetach stops the feed and confirms with the device it stopped — including
+// one whose attach was still spawning, which is precisely when the client most
+// needs to be told which intent the confirmation cancels.
+func (d *rtcDispatch) doDetach(reply func(ctrlReply)) {
+	reply(ctrlReply{Type: "detached", UDID: d.stopAttachment()})
+}
+
+func (d *rtcDispatch) doShutdown(udid string, reply func(ctrlReply)) {
+	if udid == "" {
+		reply(ctrlReply{Type: "error", Operation: opShutdown, Code: CodeBadRequest, Msg: "shutdown: missing udid"})
 		return
 	}
 	// If the live feed is this very simulator, stop it first — shutting the sim
@@ -147,13 +284,13 @@ func (d *rtcDispatch) doShutdown(udid string) {
 		// state doesn't go stale (mirrors doDetach's "detached" contract) —
 		// otherwise the video just goes silent and a later detach is a no-op.
 		d.stopAttachment()
-		d.reply(ctrlReply{Type: "detached"})
+		reply(ctrlReply{Type: "detached", UDID: udid})
 	}
 	if err := d.backend.Shutdown(d.baseCtx, udid); err != nil {
-		d.reply(ctrlReply{Type: "error", Msg: err.Error()})
+		reply(ctrlReply{Type: "error", Operation: opShutdown, UDID: udid, Code: CodeShutdownFailed, Msg: err.Error()})
 		return
 	}
-	d.reply(ctrlReply{Type: "shutdown", UDID: udid})
+	reply(ctrlReply{Type: "shutdown", UDID: udid})
 }
 
 func (d *rtcDispatch) doInput(m controlMsg) {
@@ -182,6 +319,20 @@ func (d *rtcDispatch) doShake() {
 	if err := d.backend.Shake(d.baseCtx, att.udid); err != nil {
 		log.Printf("shake: %v", err)
 	}
+}
+
+// lifecycleReply picks the route for an event nobody requested (stream_ended):
+// the reliable channel once this client has proven it speaks lifecycle there,
+// the lossy one otherwise. A request's own reply never uses this — it goes back
+// on the channel that carried it.
+func (d *rtcDispatch) lifecycleReply() func(ctrlReply) {
+	d.mu.Lock()
+	reliable := d.bulkLifecycle
+	d.mu.Unlock()
+	if reliable {
+		return d.replyBulk
+	}
+	return d.reply
 }
 
 func (d *rtcDispatch) reply(v ctrlReply) {

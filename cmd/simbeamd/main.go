@@ -178,9 +178,12 @@ func runServe(argv []string) error {
 	}
 	hostName, osVersion := macHostInfo()
 	// caps: what the sim backend forwards to simbeam-control beyond the v1
-	// gesture set — protocol-preflighted above, so advertising it is safe.
+	// gesture set — protocol-preflighted above, so advertising it is safe —
+	// plus lifecycle-over-bulk, which is the dispatcher's and holds for any
+	// backend.
 	srv := server.New(sim.New(c, path), *webDir).WithHost(hostName, osVersion).
-		WithDaemonInfo(version, []string{"touch", "app_switcher"}).WithVerbose(*verbose)
+		WithDaemonInfo(version, []string{server.CapTouch, server.CapAppSwitcher, server.CapLifecycle}).
+		WithVerbose(*verbose)
 
 	// Update check: best-effort and informational only — a hit prints the brew
 	// command and stamps future hellos, it never blocks or fails serve. Skipped
@@ -244,10 +247,12 @@ func runDemo(argv []string) error {
 		NoSandbox: *noSandbox,
 		Name:      *name,
 	})
-	// No caps: the browser backend silently no-ops touch/app_switcher, and
-	// advertising what the backend swallows would break clients' gating.
+	// No gesture caps: the browser backend silently no-ops touch/app_switcher,
+	// and advertising what the backend swallows would break clients' gating.
+	// Lifecycle-over-bulk is the dispatcher's, not the backend's, so the demo
+	// device carries it like any other.
 	srv := server.New(backend, *webDir).WithHost(*name, "demo").
-		WithDaemonInfo(version, nil).WithVerbose(*verbose)
+		WithDaemonInfo(version, []string{server.CapLifecycle}).WithVerbose(*verbose)
 
 	id, err := server.LoadOrCreateIdentity(*identityPath)
 	if err != nil {

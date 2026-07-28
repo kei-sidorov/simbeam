@@ -85,6 +85,29 @@ type Backend interface {
 	Attach(ctx context.Context, udid string, q QualityOpts) (Feed, error)
 }
 
+// AttachError is a typed attach failure: a backend returns it when it knows
+// exactly why the feed could not start, so the client gets a stable code to
+// branch on instead of prose to grep. Any other error is untyped and reported
+// as CodeAttachFailed.
+//
+// The codes are not invented here. simbeam-control emits exactly one startup
+// envelope before its handshake (helper protocol 3) with its own stable code —
+// display_not_ready, device_not_booted, hid_unavailable, … — and the daemon
+// forwards it verbatim rather than remapping it: the helper owns that
+// vocabulary and promises never to rename or reuse a code, so a translation
+// table here could only lose information or drift.
+//
+// Retryable says whether re-sending the same attach unchanged is worth it
+// (device_not_booted: the sim is still coming up; display_not_ready: it never
+// produced a framebuffer, so the client should restart the device instead).
+type AttachError struct {
+	Code      string
+	Msg       string
+	Retryable bool
+}
+
+func (e *AttachError) Error() string { return e.Msg }
+
 // Feed is one live video attachment: pre-encoded H.264 access units plus input
 // routing to whatever renders them.
 type Feed interface {

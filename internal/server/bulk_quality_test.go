@@ -10,7 +10,7 @@ import (
 // daemon says actually took effect.
 func (s *bulkSink) applied() []bulkQuality {
 	var out []bulkQuality
-	for _, raw := range s.txt {
+	for _, raw := range s.texts() {
 		var q bulkQuality
 		if err := json.Unmarshal([]byte(raw), &q); err != nil || q.Type != "quality" {
 			continue
@@ -20,8 +20,26 @@ func (s *bulkSink) applied() []bulkQuality {
 	return out
 }
 
-// waitAttaches blocks until the backend has seen n attaches: doQuality
-// re-attaches on its own goroutine so it never blocks the bulk channel.
+// waitAttached blocks until an accepted attach has installed its feed. Attach
+// is asynchronous, and a quality change that arrives before the feed exists is
+// a "no_attachment" error rather than the rebuild these tests are about.
+func waitAttached(t *testing.T, d *rtcDispatch) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		att := d.att
+		d.mu.Unlock()
+		if att != nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the attachment to be installed")
+}
+
+// waitAttaches blocks until the backend has seen n attaches: attach and the
+// quality rebuild both run on their own goroutine so neither blocks a channel.
 func waitAttaches(t *testing.T, c *stubComp, n int) []QualityOpts {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -59,10 +77,7 @@ func TestAttachCarriesQuality(t *testing.T) {
 			d := newBulkDispatch(c, &bulkSink{})
 			d.handle([]byte(tc.msg))
 
-			got := c.qualities()
-			if len(got) != 1 {
-				t.Fatalf("want 1 attach, got %d", len(got))
-			}
+			got := waitAttaches(t, c, 1)
 			// The stub records Attach's argument verbatim; filling unset fields
 			// is the backend's job, so resolve to compare like for like.
 			if r := got[0].Resolve(stubDefaultScale); r != tc.want {
@@ -79,6 +94,7 @@ func TestBulkQualityReattachesAndEchoes(t *testing.T) {
 	sink := &bulkSink{}
 	d := newBulkDispatch(c, sink)
 	d.handle([]byte(`{"type":"attach","udid":"ABC"}`))
+	waitAttached(t, d)
 
 	d.handleBulk([]byte(`{"type":"quality","scale":0.25,"bitrate":1000000}`))
 
@@ -92,7 +108,7 @@ func TestBulkQualityReattachesAndEchoes(t *testing.T) {
 
 	echo := sink.applied()
 	if len(echo) != 1 {
-		t.Fatalf("want 1 quality echo, got %d (%v)", len(echo), sink.txt)
+		t.Fatalf("want 1 quality echo, got %d (%v)", len(echo), sink.texts())
 	}
 	if echo[0].Scale != 0.25 || echo[0].Bitrate != 1_000_000 {
 		t.Fatalf("echo = %+v, want the applied quality", echo[0])
@@ -106,6 +122,7 @@ func TestBulkQualityEchoesClampedValue(t *testing.T) {
 	sink := &bulkSink{}
 	d := newBulkDispatch(c, sink)
 	d.handle([]byte(`{"type":"attach","udid":"ABC"}`))
+	waitAttached(t, d)
 
 	d.handleBulk([]byte(`{"type":"quality","scale":9,"bitrate":999000000}`))
 	got := waitAttaches(t, c, 2)
@@ -126,6 +143,7 @@ func TestBulkQualityUnsetFieldsDefault(t *testing.T) {
 	sink := &bulkSink{}
 	d := newBulkDispatch(c, sink)
 	d.handle([]byte(`{"type":"attach","udid":"ABC","scale":0.25,"bitrate":1000000}`))
+	waitAttached(t, d)
 
 	d.handleBulk([]byte(`{"type":"quality"}`))
 	got := waitAttaches(t, c, 2)
@@ -154,7 +172,7 @@ func TestBulkQualityWithoutAttachErrors(t *testing.T) {
 	}
 	errs := sink.errors()
 	if len(errs) != 1 {
-		t.Fatalf("want 1 error envelope, got %v", sink.txt)
+		t.Fatalf("want 1 error envelope, got %v", sink.texts())
 	}
 	if errs[0].Code != CodeNoAttachment {
 		t.Fatalf("code = %q, want %q", errs[0].Code, CodeNoAttachment)
@@ -184,7 +202,7 @@ func TestBulkQualityProbeBeforeAttachIsFreeAndDistinguishable(t *testing.T) {
 	}
 	errs := sink.errors()
 	if len(errs) != 2 {
-		t.Fatalf("want 2 error envelopes, got %v", sink.txt)
+		t.Fatalf("want 2 error envelopes, got %v", sink.texts())
 	}
 	if errs[0].Code != CodeNoAttachment {
 		t.Fatalf("supported-daemon probe: code = %q, want %q", errs[0].Code, CodeNoAttachment)
@@ -216,7 +234,7 @@ func TestBulkErrorCodes(t *testing.T) {
 
 			errs := sink.errors()
 			if len(errs) != 1 {
-				t.Fatalf("want 1 error envelope, got %v", sink.txt)
+				t.Fatalf("want 1 error envelope, got %v", sink.texts())
 			}
 			if errs[0].Code != tc.want {
 				t.Fatalf("code = %q, want %q", errs[0].Code, tc.want)

@@ -108,7 +108,7 @@ func TestAttachSupersededByConcurrentAttachDropsItsFeed(t *testing.T) {
 	be := &slowBackend{}
 	d, writers := raceDispatch(be)
 
-	d.doAttach("A", QualityOpts{})
+	d.doAttach("A", QualityOpts{}, d.reply)
 	d.handleBulk([]byte(`{"type":"quality","scale":0.25}`)) // spawns a re-attach of A
 	d.handle([]byte(`{"type":"attach","udid":"B"}`))        // user switches, concurrently
 
@@ -140,7 +140,7 @@ func TestDetachDuringQualityRebuildStaysDetached(t *testing.T) {
 	be := &slowBackend{}
 	d, _ := raceDispatch(be)
 
-	d.doAttach("A", QualityOpts{})
+	d.doAttach("A", QualityOpts{}, d.reply)
 	d.handleBulk([]byte(`{"type":"quality","scale":0.25}`))
 	d.handle([]byte(`{"type":"detach"}`))
 
@@ -163,7 +163,7 @@ func TestShutdownDuringQualityRebuildStaysDetached(t *testing.T) {
 	be := &slowBackend{}
 	d, _ := raceDispatch(be)
 
-	d.doAttach("A", QualityOpts{})
+	d.doAttach("A", QualityOpts{}, d.reply)
 	d.handleBulk([]byte(`{"type":"quality","scale":0.25}`))
 	d.handle([]byte(`{"type":"shutdown","udid":"A"}`))
 
@@ -179,7 +179,7 @@ func TestBackToBackQualityChangesLeaveOneFeed(t *testing.T) {
 	be := &slowBackend{}
 	d, _ := raceDispatch(be)
 
-	d.doAttach("A", QualityOpts{})
+	d.doAttach("A", QualityOpts{}, d.reply)
 	d.handleBulk([]byte(`{"type":"quality","scale":0.25}`))
 	d.handleBulk([]byte(`{"type":"quality","scale":0.75}`))
 	d.handleBulk([]byte(`{"type":"quality","scale":1.0}`))

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -32,19 +33,23 @@ const bulkFrameMax = 1024
 // bulkMsg is an inbound request on the reliable ordered "bulk" DataChannel:
 // {"type":"list"} — the simulator list — {"type":"screenshot"}, a
 // full-resolution capture of the currently attached simulator (no parameters) —
-// or {"type":"quality","scale":…,"bitrate":…}, which re-encodes the live feed at
-// a new quality.
+// {"type":"quality","scale":…,"bitrate":…}, which re-encodes the live feed at a
+// new quality — or any lifecycle request (boot/restart/attach/detach/shutdown),
+// which is the same message it would be on "control".
 //
 // list rides "bulk" rather than "control" because control is unreliable
 // (maxRetransmits: 0), and the sims reply is the largest, most critical control
 // message: on a cellular/relay path it was dropped with no retransmission,
 // hanging the list screen forever (issue #2). Quality rides bulk for the same
 // reason — dropped on exactly the bad network that motivates lowering it
-// (decision №88).
+// (decision №88). Lifecycle joins them because it is must-arrive in both
+// directions: a lost "attach" and a lost "attached" are indistinguishable to
+// the client, and it can only wait (issue #4).
 type bulkMsg struct {
-	Type string `json:"type"` // list|screenshot|quality
-	// QualityOpts carries quality's "scale"/"bitrate" (embedded → top-level
-	// fields). Ignored by list and screenshot, which take no parameters.
+	Type string `json:"type"` // list|screenshot|quality|boot|restart|attach|detach|shutdown
+	UDID string `json:"udid"` // boot, restart, attach, shutdown
+	// QualityOpts carries quality's and attach's "scale"/"bitrate" (embedded →
+	// top-level fields). Ignored by the requests that take no parameters.
 	QualityOpts
 }
 
@@ -121,6 +126,12 @@ func (d *rtcDispatch) handleBulk(data []byte) {
 	case "quality":
 		d.doQuality(m.QualityOpts)
 	default:
+		// A lifecycle request: the same message it would be on "control",
+		// answered here instead. Anything else is genuinely unknown.
+		lm := controlMsg{Type: m.Type, UDID: m.UDID, QualityOpts: m.QualityOpts}
+		if d.lifecycle(lm, true) {
+			return
+		}
 		d.bulkError(CodeUnknownType, fmt.Sprintf("unknown bulk type %q", m.Type))
 	}
 }
@@ -162,8 +173,11 @@ func (d *rtcDispatch) doList() {
 // then install a feed the client already dismissed.
 //
 // The reply reports the requested-and-clamped quality rather than a completed
-// attach; failures surface on control as attachAs's "error", the same as any
-// other attach.
+// attach; the rebuild's own outcome ("attached", or one typed error) follows
+// like any other attach's. It follows on this client's lifecycle route, not
+// necessarily on "bulk": a client old enough to send `quality` here but not
+// lifecycle is documented to read that outcome on "control", and answering it
+// somewhere it never listened would be a silent regression.
 func (d *rtcDispatch) doQuality(q QualityOpts) {
 	udid, gen, ok := d.restartAttachment()
 	if !ok {
@@ -171,7 +185,7 @@ func (d *rtcDispatch) doQuality(q QualityOpts) {
 		return
 	}
 	q = q.Resolve(d.backend.DefaultScale())
-	go d.attachAs(udid, q, gen)
+	go d.attachAs(udid, q, gen, d.lifecycleReply())
 
 	b, err := json.Marshal(bulkQuality{Type: "quality", QualityOpts: q})
 	if err != nil || d.sendBulkText == nil {
@@ -254,6 +268,30 @@ func (d *rtcDispatch) sendChunked(typ string, payload []byte) error {
 		}
 	}
 	return nil
+}
+
+// lifecycleMsgMax caps the prose in a lifecycle reply. Everything else in one
+// is short and bounded — a type, a udid, a code, an operation — so capping the
+// one unbounded field is what keeps the frame inside bulkFrameMax. It has to be
+// kept: a backend error can carry a whole simctl stderr dump, and a lifecycle
+// reply that black-holes on an IPv6 path (issue #3) would defeat the entire
+// reason lifecycle moved to this channel.
+const lifecycleMsgMax = 512
+
+// replyBulk sends one lifecycle reply as a single text frame on "bulk".
+func (d *rtcDispatch) replyBulk(v ctrlReply) {
+	if len(v.Msg) > lifecycleMsgMax {
+		// ToValidUTF8 drops the partial rune the cut may have left behind, so
+		// the JSON encoder doesn't turn it into a replacement character.
+		v.Msg = strings.ToValidUTF8(v.Msg[:lifecycleMsgMax], "") + "…"
+	}
+	b, err := json.Marshal(v)
+	if err != nil || d.sendBulkText == nil {
+		return
+	}
+	if err := d.sendBulkText(string(b)); err != nil {
+		log.Printf("bulk: sending %s reply failed: %v", v.Type, err)
+	}
 }
 
 // bulkError replies with the text error envelope. code is the stable value the
