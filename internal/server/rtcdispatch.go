@@ -111,6 +111,11 @@ func (d *rtcDispatch) handle(data []byte) {
 		d.doInput(m)
 	case "shake":
 		d.doShake()
+	case "hello":
+		// Re-request of the unsolicited greeting: it rides the lossy control
+		// channel and doubles as the pin-ack, so a client that missed it asks
+		// again. Idempotent — same reply as the on-open push.
+		d.sendHello()
 	}
 }
 

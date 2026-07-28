@@ -303,6 +303,21 @@ func TestSendHelloCarriesHostInfo(t *testing.T) {
 	}
 }
 
+// A client that missed the on-open hello (lossy channel) can re-request it
+// with {"type":"hello"} — same reply, works with or without an attachment.
+func TestHelloRequestRepliesHello(t *testing.T) {
+	var out []ctrlReply
+	d := newTestDispatch(&stubComp{}, &out)
+	d.hostName, d.version, d.caps = "Mac", "0.12.1", []string{"touch"}
+	d.handle([]byte(`{"type":"hello"}`))
+	if len(out) != 1 || out[0].Type != "hello" {
+		t.Fatalf("want one hello reply, got %+v", out)
+	}
+	if out[0].Name != "Mac" || out[0].Version != "0.12.1" || len(out[0].Caps) != 1 || !out[0].Paired {
+		t.Fatalf("re-requested hello must match the on-open push, got %+v", out[0])
+	}
+}
+
 // The hello advertises the daemon's version and capability list — this is the
 // only way a client can learn it may stream touch/app_switcher. Absent fields
 // (old daemon) must mean "v1 gesture set" on the client, so the zero value

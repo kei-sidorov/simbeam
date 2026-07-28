@@ -8,7 +8,7 @@ import (
 // controlMsg is an inbound message from the client — over the WebRTC "control"
 // DataChannel.
 type controlMsg struct {
-	Type     string  `json:"type"`   // tap|touch|home|swipe|key|shake|app_switcher|boot|attach|detach|shutdown
+	Type     string  `json:"type"`   // tap|touch|home|swipe|key|shake|app_switcher|boot|attach|detach|shutdown|hello
 	UDID     string  `json:"udid"`   // boot, attach, shutdown
 	Action   string  `json:"action"` // touch: down|move|up
 	X        float64 `json:"x"`
@@ -45,7 +45,7 @@ func parseControl(data []byte) (controlMsg, error) {
 		return m, fmt.Errorf("bad control json: %w", err)
 	}
 	switch m.Type {
-	case "tap", "home", "swipe", "key", "shake", "app_switcher", "boot", "attach", "detach", "shutdown":
+	case "tap", "home", "swipe", "key", "shake", "app_switcher", "boot", "attach", "detach", "shutdown", "hello":
 		return m, nil
 	case "touch":
 		// action is an enum like type: reject garbage here rather than hand the

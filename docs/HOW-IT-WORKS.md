@@ -292,6 +292,7 @@ The client sends:
 | app_switcher | `{"type":"app_switcher"}` | open the app switcher (the double Home press is serialized inside the companion, so its timing window is guaranteed) |
 | key     | `{"type":"key","key":"<KeyboardEvent.key>"}` | a hardware key press |
 | shake   | `{"type":"shake"}` | shake the attached simulator (e.g. to trigger Shake to Undo); fire-and-forget, no reply |
+| hello   | `{"type":"hello"}` | re-request the greeting: the on-open `hello` rides this lossy channel and doubles as the pin-ack, so a client that hasn't received one shortly after the channel opens asks again (idempotent; daemons ≤ v0.12.0 ignore it) |
 
 Coordinates are **normalized 0–1** relative to the displayed frame; the daemon scales them to the
 simulator's logical points.
