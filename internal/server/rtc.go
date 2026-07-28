@@ -13,7 +13,8 @@ import (
 // to a fresh dispatcher. iceServers comes from the broker for remote rendezvous.
 // The caller owns ctx and must call sess.Close()/d.stopAttachment() on teardown.
 func (s *Server) startSession(ctx context.Context, iceServers []webrtc.ICEServer) (*rtc.Session, *rtcDispatch, error) {
-	d := &rtcDispatch{backend: s.backend, baseCtx: ctx, hostName: s.hostName, osVersion: s.osVersion, latestVersion: s.latestVersion}
+	d := &rtcDispatch{backend: s.backend, baseCtx: ctx, hostName: s.hostName, osVersion: s.osVersion,
+		version: s.version, caps: s.caps, latestVersion: s.latestVersion}
 	sess, err := rtc.New(d.handle, d.handleBulk, iceServers)
 	if err != nil {
 		return nil, nil, err

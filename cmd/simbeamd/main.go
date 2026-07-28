@@ -177,7 +177,10 @@ func runServe(argv []string) error {
 		return err
 	}
 	hostName, osVersion := macHostInfo()
-	srv := server.New(sim.New(c, path), *webDir).WithHost(hostName, osVersion).WithVerbose(*verbose)
+	// caps: what the sim backend forwards to simbeam-control beyond the v1
+	// gesture set — protocol-preflighted above, so advertising it is safe.
+	srv := server.New(sim.New(c, path), *webDir).WithHost(hostName, osVersion).
+		WithDaemonInfo(version, []string{"touch", "app_switcher"}).WithVerbose(*verbose)
 
 	// Update check: best-effort and informational only — a hit prints the brew
 	// command and stamps future hellos, it never blocks or fails serve. Skipped
@@ -241,7 +244,10 @@ func runDemo(argv []string) error {
 		NoSandbox: *noSandbox,
 		Name:      *name,
 	})
-	srv := server.New(backend, *webDir).WithHost(*name, "demo").WithVerbose(*verbose)
+	// No caps: the browser backend silently no-ops touch/app_switcher, and
+	// advertising what the backend swallows would break clients' gating.
+	srv := server.New(backend, *webDir).WithHost(*name, "demo").
+		WithDaemonInfo(version, nil).WithVerbose(*verbose)
 
 	id, err := server.LoadOrCreateIdentity(*identityPath)
 	if err != nil {

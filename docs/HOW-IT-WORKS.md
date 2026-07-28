@@ -306,7 +306,7 @@ The daemon replies on the same channel:
 
 | Reply | Shape |
 |-------|-------|
-| hello    | `{"type":"hello","name":"<Mac name>","osVersion":"<macOS version>","paired":true,"latestVersion":"<semver>"}` — `latestVersion` appears only when the daemon's daily GitHub-Releases check found a newer simbeamd; clients may show an "update the Mac side" nudge (`brew upgrade`) |
+| hello    | `{"type":"hello","name":"<Mac name>","osVersion":"<macOS version>","paired":true,"version":"<semver>","caps":["touch","app_switcher"],"latestVersion":"<semver>"}` — `version` is the daemon's own version; `caps` lists the optional control features this daemon+backend forwards, and it is how a client learns it may stream `touch`/send `app_switcher` (**gate on membership; a hello without `caps` is a daemon ≤ v0.11 → assume the v1 gesture set** — the demo backend also advertises none, it swallows touch). `latestVersion` appears only when the daemon's daily GitHub-Releases check found a newer simbeamd; clients may show an "update the Mac side" nudge (`brew upgrade`) |
 | booted   | `{"type":"booted","udid":"<udid>"}` |
 | shutdown | `{"type":"shutdown","udid":"<udid>"}` (if it was the streaming sim, a `detached` is sent first) |
 | attached | `{"type":"attached","w":<px>,"h":<px>}` (the simulator's **native** screen size — see below) |

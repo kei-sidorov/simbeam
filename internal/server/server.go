@@ -21,6 +21,8 @@ type Server struct {
 	onEnroll  func(clientPubKey string) // fired when a new client enrolls via the pairing window; nil → no-op
 	hostName  string                    // host display name, pushed in the hello (e.g. "Kirill's MacBook Pro"); "" → omitted
 	osVersion string                    // host OS version, pushed in the hello (e.g. "26.5"); "" → omitted
+	version   string                    // daemon version, pushed in the hello (e.g. "0.12.0"); "" → omitted
+	caps      []string                  // optional control features the backend supports, pushed in the hello
 	verbose   bool                      // -v: log every broker reconnect attempt, not just transitions
 
 	// latest is the newer-release version (bare semver) found by the update
@@ -46,6 +48,17 @@ func (s *Server) WithHost(name, osVersion string) *Server {
 // broker reconnect attempt (cause + backoff); when false it logs only offline/
 // online transitions, so routine sleep/wake churn stays quiet.
 func (s *Server) WithVerbose(v bool) *Server { s.verbose = v; return s }
+
+// WithDaemonInfo sets the daemon version and the optional-capability list the
+// hello advertises, so a client can gate features on what THIS daemon actually
+// forwards instead of guessing from version tables. caps describes the
+// backend, not the dispatcher — the demo backend no-ops touch, so demo mode
+// advertises none. A hello with no caps at all means a daemon too old to
+// advertise (≤ v0.11): clients must assume the v1 gesture set.
+func (s *Server) WithDaemonInfo(version string, caps []string) *Server {
+	s.version, s.caps = version, caps
+	return s
+}
 
 // SetLatestVersion records that a newer daemon release exists (bare semver,
 // e.g. "0.11.0"). Every hello sent from then on carries it, so clients can

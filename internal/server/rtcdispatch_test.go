@@ -303,6 +303,24 @@ func TestSendHelloCarriesHostInfo(t *testing.T) {
 	}
 }
 
+// The hello advertises the daemon's version and capability list — this is the
+// only way a client can learn it may stream touch/app_switcher. Absent fields
+// (old daemon) must mean "v1 gesture set" on the client, so the zero value
+// stays omitted on the wire.
+func TestSendHelloCarriesVersionAndCaps(t *testing.T) {
+	var out []ctrlReply
+	d := newTestDispatch(&stubComp{}, &out)
+	d.version = "0.12.0"
+	d.caps = []string{"touch", "app_switcher"}
+	d.sendHello()
+	if out[0].Version != "0.12.0" {
+		t.Fatalf("hello version = %q, want 0.12.0", out[0].Version)
+	}
+	if len(out[0].Caps) != 2 || out[0].Caps[0] != "touch" || out[0].Caps[1] != "app_switcher" {
+		t.Fatalf("hello caps = %v, want [touch app_switcher]", out[0].Caps)
+	}
+}
+
 // The hello reads latestVersion at send time (a func, not a snapshot): a
 // release discovered mid-run must reach sessions opened after the discovery.
 func TestSendHelloCarriesLatestVersion(t *testing.T) {

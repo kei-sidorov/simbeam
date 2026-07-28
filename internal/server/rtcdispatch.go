@@ -22,6 +22,13 @@ type ctrlReply struct {
 	// LatestVersion, when set in a hello, says a newer simbeamd release exists
 	// (bare semver) — the client may nudge the user to upgrade the Mac side.
 	LatestVersion string `json:"latestVersion,omitempty"`
+	// Version is the daemon's own version in the hello (e.g. "0.12.0", "dev").
+	Version string `json:"version,omitempty"`
+	// Caps lists the optional control features this daemon+backend forwards
+	// (e.g. "touch", "app_switcher") in the hello. Clients gate features on
+	// membership; an absent list = a daemon too old to advertise → v1 gesture
+	// set only (tap/swipe/home/key/shake).
+	Caps []string `json:"caps,omitempty"`
 }
 
 // rtcDispatch is the per-session control plane. It owns at most one video
@@ -43,8 +50,10 @@ type rtcDispatch struct {
 	sendBulkText func(string) error // bulk reply, transfer header or error envelope (text)
 	bulkMaxMsg   func() int         // peer's negotiated max message size, the hard cap on one sendBulk
 	writeFrame   func([]byte, time.Duration) error
-	hostName     string // Mac display name, sent in the hello
-	osVersion    string // macOS version, sent in the hello
+	hostName     string   // Mac display name, sent in the hello
+	osVersion    string   // macOS version, sent in the hello
+	version      string   // daemon version, sent in the hello
+	caps         []string // backend's optional control features, sent in the hello
 	// latestVersion reports a newer available daemon release for the hello, or
 	// "". A func, not a string: the update checker may learn of a release while
 	// the daemon runs, and later sessions should carry it. nil → never.
@@ -79,7 +88,8 @@ func (d *rtcDispatch) sendHello() {
 	if d.latestVersion != nil {
 		latest = d.latestVersion()
 	}
-	d.reply(ctrlReply{Type: "hello", Name: d.hostName, OSVersion: d.osVersion, Paired: true, LatestVersion: latest})
+	d.reply(ctrlReply{Type: "hello", Name: d.hostName, OSVersion: d.osVersion, Paired: true,
+		Version: d.version, Caps: d.caps, LatestVersion: latest})
 }
 
 func (d *rtcDispatch) handle(data []byte) {
