@@ -48,11 +48,37 @@ func ResolveControl() (string, error) {
 }
 
 // requiredControlProtocol is the minimum simbeam-control protocol this daemon
-// depends on: 2 = streamed touch + app_switcher. Bump it whenever the daemon
-// starts requiring a new helper capability — brew cannot pin dependency
+// depends on: 3 = typed startup failures (the ready:false envelope) and the
+// in-helper wait for the simulator's first framebuffer. Bump it whenever the
+// daemon starts requiring a new helper capability — brew cannot pin dependency
 // versions, so this preflight is the only thing standing between an upgraded
 // daemon and a stale helper silently dropping commands.
-const requiredControlProtocol = 2
+//
+// 3 is a hard minimum rather than a preference: a helper older than 3 emits no
+// failure envelope at all, so every cold-boot failure would arrive as "exited
+// before handshake" prose and the whole typed-failure contract this daemon
+// promises its clients (issue #4) would be a lie.
+const requiredControlProtocol = 3
+
+// controlStartupTimeout is what we pass as --startup-timeout-ms: simbeam-control's
+// own bound on waiting for the simulator's first framebuffer IOSurface.
+// Protocol 3 does that wait in-process (woken by the CoreSimulator
+// surface-change callback), which is why the daemon has no attach-retry loop
+// for the ordinary post-boot case: reaching this deadline means the device
+// genuinely never produced a surface, and the answer to that is a restart, not
+// another attach.
+//
+// controlStartupTimeout < controlHandshakeTimeout < server.AttachTimeout, and
+// the ordering is load-bearing (asserted in the tests). Whoever's clock fires
+// first owns the outcome: if ours did, the client gets "we killed a process
+// that never spoke"; if the helper's does, it gets display_not_ready and knows
+// exactly what to do.
+const controlStartupTimeout = 20 * time.Second
+
+// controlHandshakeTimeout is our own backstop for a helper that neither
+// handshakes nor reports a typed failure within its own deadline — a wedge, not
+// a slow simulator.
+const controlHandshakeTimeout = 25 * time.Second
 
 // CheckControlProtocol preflights `simbeam-control --protocol` and fails with
 // an actionable error when the helper is older than the daemon requires
@@ -121,6 +147,10 @@ func newControl(ctx context.Context, bin, udid string, q server.QualityOpts) (*c
 		"--keyframe-interval-ms", strconv.Itoa(controlKeyframeMs),
 		"--bitrate", strconv.Itoa(q.Bitrate),
 		"--scale", strconv.FormatFloat(q.Scale, 'f', -1, 64),
+		// Passed explicitly rather than left to the helper's default, so the
+		// daemon's bound and the helper's stay in one place and cannot drift
+		// apart across a brew upgrade.
+		"--startup-timeout-ms", strconv.Itoa(int(controlStartupTimeout/time.Millisecond)),
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -148,10 +178,11 @@ func newControl(ctx context.Context, bin, udid string, q server.QualityOpts) (*c
 		c.closeStdin()
 	}()
 
-	// Read stderr: the first handshake unblocks us; later handshakes (rotation /
-	// resize rebuild the encoder, README) update the geometry; everything else is
-	// logged.
+	// Read stderr: the ready handshake unblocks us; a ready:false envelope fails
+	// us with the helper's own code; later handshakes (rotation / resize rebuild
+	// the encoder, README) update the geometry; everything else is logged.
 	ready := make(chan controlDims, 1)
+	failed := make(chan *server.AttachError, 1)
 	done := make(chan struct{})
 	var lastLine string
 	c.readers.Add(1)
@@ -163,16 +194,34 @@ func newControl(ctx context.Context, bin, udid string, q server.QualityOpts) (*c
 		firstSent := false
 		for sc.Scan() {
 			line := sc.Text()
-			if d, ok := parseHandshake(line); ok {
+			e, ok := parseControlEvent(line)
+			switch {
+			case !ok:
+				// Plain-text logging. Kept as lastLine: if the helper then dies
+				// without an envelope, this is the only clue we can hand up.
+				lastLine = line
+				log.Printf("simbeam-control: %s", line)
+			case e.Ready == nil:
+				// The framebuffer-wait notice a cold boot emits before the
+				// handshake. It settles nothing, and it must NOT become
+				// lastLine — reporting "exited before handshake: {waiting…}"
+				// would name the wait as the failure instead of whatever
+				// actually killed the process.
+				log.Printf("simbeam-control: %s", line)
+			case *e.Ready:
+				d := e.dims()
 				c.setDims(d)
 				if !firstSent {
 					firstSent = true
 					ready <- d
 				}
-				continue
+			default:
+				log.Printf("simbeam-control %s: startup failed: %s", udid, line)
+				select {
+				case failed <- e.attachError(udid):
+				default: // protocol 3 sends at most one; ignore a repeat
+				}
 			}
-			lastLine = line
-			log.Printf("simbeam-control: %s", line)
 		}
 	}()
 
@@ -180,25 +229,63 @@ func newControl(ctx context.Context, bin, udid string, q server.QualityOpts) (*c
 	case <-ready:
 		c.frames = c.readFrames(ctx, stdout)
 		return c, nil
+	case err := <-failed:
+		c.Close()
+		return nil, err
 	case <-done:
 		c.Close()
+		// The envelope and the exit race each other down the same pipe, so an
+		// envelope that landed in the same batch as EOF is still the real cause.
+		select {
+		case err := <-failed:
+			return nil, err
+		default:
+		}
+		if ctx.Err() != nil {
+			// Cancelled mid-startup: a detach, a newer attach, or the session
+			// ending. Protocol 3 stops promptly with a plain-text note and exit
+			// 0 — no envelope — precisely so this is not reported as a failure.
+			// The intent that superseded us owns the client's reply.
+			return nil, ctx.Err()
+		}
 		if lastLine != "" {
 			return nil, fmt.Errorf("simbeam-control %s exited before handshake: %s", udid, lastLine)
 		}
 		return nil, fmt.Errorf("simbeam-control %s exited before handshake", udid)
-	case <-time.After(15 * time.Second):
+	case <-time.After(controlHandshakeTimeout):
 		c.Close()
-		return nil, fmt.Errorf("simbeam-control %s: no handshake within 15s", udid)
+		return nil, fmt.Errorf("simbeam-control %s: no handshake within %s", udid, controlHandshakeTimeout)
 	case <-ctx.Done():
 		c.Close()
 		return nil, ctx.Err()
 	}
 }
 
-// handshake mirrors the stderr JSON simbeam-control emits when the encoder is
-// ready: point dimensions, native scale, and the even-sized encoded video.
-type handshake struct {
-	Ready         bool    `json:"ready"`
+// controlEvent is one JSON line on simbeam-control's stderr. Protocol 3 emits
+// three kinds before video flows, and `ready` is the discriminator:
+//
+//	{"waiting":"framebuffer","protocol":3,"timeout_ms":15000}      — cold boot, still waiting
+//	{"ready":true,"width":…,"height":…,"scale":…,"protocol":3}     — the handshake
+//	{"ready":false,"error":"display_not_ready","message":…,"retryable":true} — one terminal failure
+//
+// Two things make this a parser rather than a line index. The handshake is NOT
+// the first line on a cold boot — the waiting notice precedes it — so anything
+// reading stderr line 1 breaks on every cold start. And key order is not stable
+// (the helper marshals with JSONSerialization), so the discriminator has to be
+// read as JSON, never matched as text.
+//
+// Ready is a pointer because absent and false mean different things: the
+// waiting line has no `ready` at all and settles nothing, while `ready:false`
+// is the terminal failure.
+type controlEvent struct {
+	Ready   *bool  `json:"ready"`
+	Waiting string `json:"waiting"`
+	// Failure envelope. Note the field names: `error` and `message`, not the
+	// `code`/`msg` this daemon uses on the wire to its own clients.
+	Error     string `json:"error"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+	// Handshake geometry.
 	Width         float64 `json:"width"`  // simulator points
 	Height        float64 `json:"height"` // simulator points
 	Scale         float64 `json:"scale"`  // native display scale
@@ -206,27 +293,50 @@ type handshake struct {
 	EncodedHeight uint64  `json:"encoded_height"`
 }
 
-// parseHandshake decodes a ready-handshake line into controlDims. Pixel
-// dimensions are the full retina resolution (points × scale), matching the
-// screen size the old idb Describe reported; the encoded video is a scaled-down
-// slice of it (decision №40) with the same aspect.
-func parseHandshake(line string) (controlDims, bool) {
+// parseControlEvent decodes one stderr line, reporting false for anything that
+// isn't a JSON object (the helper's plain-text logging).
+func parseControlEvent(line string) (controlEvent, bool) {
 	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, "{") {
-		return controlDims{}, false
+		return controlEvent{}, false
 	}
-	var h handshake
-	if err := json.Unmarshal([]byte(line), &h); err != nil || !h.Ready {
-		return controlDims{}, false
+	var e controlEvent
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return controlEvent{}, false
 	}
-	d := controlDims{widthPoints: h.Width, heightPoints: h.Height}
-	if h.Scale > 0 {
-		d.pixelW = uint64(math.Round(h.Width * h.Scale))
-		d.pixelH = uint64(math.Round(h.Height * h.Scale))
+	return e, true
+}
+
+// dims maps a ready handshake to controlDims. Pixel dimensions are the full
+// retina resolution (points × scale), matching the screen size the old idb
+// Describe reported; the encoded video is a scaled-down slice of it (decision
+// №40) with the same aspect.
+func (e controlEvent) dims() controlDims {
+	d := controlDims{widthPoints: e.Width, heightPoints: e.Height}
+	if e.Scale > 0 {
+		d.pixelW = uint64(math.Round(e.Width * e.Scale))
+		d.pixelH = uint64(math.Round(e.Height * e.Scale))
 	} else {
-		d.pixelW, d.pixelH = h.EncodedWidth, h.EncodedHeight
+		d.pixelW, d.pixelH = e.EncodedWidth, e.EncodedHeight
 	}
-	return d, true
+	return d
+}
+
+// attachError maps a ready:false envelope to the typed failure the session
+// layer hands the client. The helper's code travels verbatim — it is stable
+// protocol surface over there, never renamed or reused, so remapping it here
+// could only lose meaning. A missing code (a helper bug, or a future envelope
+// shape) degrades to untyped rather than to a wrong code.
+func (e controlEvent) attachError(udid string) *server.AttachError {
+	msg := e.Message
+	if msg == "" {
+		msg = "simbeam-control startup failed"
+	}
+	return &server.AttachError{
+		Code:      e.Error,
+		Msg:       fmt.Sprintf("%s: %s", udid, msg),
+		Retryable: e.Retryable,
+	}
 }
 
 func (c *control) setDims(d controlDims) {

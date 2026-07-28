@@ -5,7 +5,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/kei-sidorov/simbeam/internal/server"
 )
 
 // testControl builds a control whose NDJSON writer feeds an in-memory buffer, so
@@ -135,7 +139,7 @@ func TestControlProtocolMapping(t *testing.T) {
 		err  error
 		want int
 	}{
-		{"new helper prints version", "2\n", nil, 2},
+		{"new helper prints version", "3\n", nil, 3},
 		{"future version passes through", "7\n", nil, 7},
 		{"pre-flag helper exits non-zero", "", errors.New("exit status 2"), 1},
 		{"garbage output", "Usage: simbeam-control ...", nil, 1},
@@ -145,6 +149,117 @@ func TestControlProtocolMapping(t *testing.T) {
 		if got := controlProtocol([]byte(tc.out), tc.err); got != tc.want {
 			t.Errorf("%s: controlProtocol = %d, want %d", tc.name, got, tc.want)
 		}
+	}
+}
+
+// The startup lines must be told apart by their `ready` field, not by position:
+// on a cold boot the framebuffer-wait notice comes first, so anything reading
+// stderr line 1 as the handshake breaks on every cold start.
+func TestParseControlEventDiscriminatesOnReady(t *testing.T) {
+	cases := []struct {
+		name       string
+		line       string
+		wantParsed bool
+		wantReady  *bool // nil = no `ready` field at all
+	}{
+		{"waiting notice has no ready", `{"waiting":"framebuffer","protocol":3,"timeout_ms":15000}`, true, nil},
+		{"handshake", `{"ready":true,"width":402,"height":874,"scale":3,"protocol":3}`, true, ptr(true)},
+		{"failure envelope", `{"ready":false,"error":"display_not_ready","message":"no surface","retryable":true}`, true, ptr(false)},
+		{"plain text is not an event", `startup cancelled before the simulator framebuffer was available`, false, nil},
+		{"broken json is not an event", `{"ready":`, false, nil},
+	}
+	for _, tc := range cases {
+		e, ok := parseControlEvent(tc.line)
+		if ok != tc.wantParsed {
+			t.Errorf("%s: parsed = %v, want %v", tc.name, ok, tc.wantParsed)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		switch {
+		case tc.wantReady == nil && e.Ready != nil:
+			t.Errorf("%s: ready = %v, want absent", tc.name, *e.Ready)
+		case tc.wantReady != nil && e.Ready == nil:
+			t.Errorf("%s: ready absent, want %v", tc.name, *tc.wantReady)
+		case tc.wantReady != nil && *e.Ready != *tc.wantReady:
+			t.Errorf("%s: ready = %v, want %v", tc.name, *e.Ready, *tc.wantReady)
+		}
+	}
+}
+
+func ptr(b bool) *bool { return &b }
+
+// Key order is not stable in the helper's output (JSONSerialization), so the
+// envelope must survive being reordered — a text match would not.
+func TestParseControlEventIgnoresKeyOrder(t *testing.T) {
+	line := `{"retryable":true,"message":"no framebuffer within 15000 ms","protocol":3,"error":"display_not_ready","ready":false}`
+	e, ok := parseControlEvent(line)
+	if !ok || e.Ready == nil || *e.Ready {
+		t.Fatalf("reordered envelope not parsed as a failure: %+v ok=%v", e, ok)
+	}
+	err := e.attachError("ABC")
+	if err.Code != "display_not_ready" || !err.Retryable {
+		t.Fatalf("attachError = %+v, want the helper's code and retryable flag", err)
+	}
+	if !strings.Contains(err.Msg, "ABC") || !strings.Contains(err.Msg, "framebuffer") {
+		t.Fatalf("message must name the device and carry the helper's text, got %q", err.Msg)
+	}
+}
+
+// The helper's codes are its protocol surface: forwarded verbatim, never
+// remapped, so a client can branch on them. Retryable travels with them —
+// device_not_booted means "call again", display_not_ready means "restart".
+func TestAttachErrorForwardsCodesVerbatim(t *testing.T) {
+	for _, tc := range []struct {
+		code      string
+		retryable bool
+	}{
+		{"invalid_arguments", false},
+		{"core_simulator_unavailable", false},
+		{"device_not_found", false},
+		{"device_not_booted", true},
+		{"display_not_ready", true},
+		{"encoder_failed", false},
+		{"hid_unavailable", false},
+	} {
+		e := controlEvent{Error: tc.code, Message: "…", Retryable: tc.retryable}
+		got := e.attachError("ABC")
+		if got.Code != tc.code || got.Retryable != tc.retryable {
+			t.Errorf("attachError(%s) = code %q retryable %v, want %q/%v",
+				tc.code, got.Code, got.Retryable, tc.code, tc.retryable)
+		}
+	}
+}
+
+// A handshake still yields the full retina geometry (points × scale), falling
+// back to the encoded size when the helper reports no scale.
+func TestControlEventDims(t *testing.T) {
+	e, _ := parseControlEvent(`{"ready":true,"width":402,"height":874,"scale":3}`)
+	if d := e.dims(); d.widthPoints != 402 || d.pixelW != 1206 || d.pixelH != 2622 {
+		t.Fatalf("dims = %+v, want 402pt → 1206x2622px", d)
+	}
+	e, _ = parseControlEvent(`{"ready":true,"width":402,"height":874,"encoded_width":600,"encoded_height":1300}`)
+	if d := e.dims(); d.pixelW != 600 || d.pixelH != 1300 {
+		t.Fatalf("dims without scale = %+v, want the encoded size", d)
+	}
+}
+
+// The three startup deadlines must nest, and the ordering is what decides who
+// reports a stuck attach. If the daemon's fired first the client would get "we
+// killed a process that never spoke" instead of the helper's typed
+// display_not_ready — the whole point of issue #4.
+func TestStartupTimeoutsNest(t *testing.T) {
+	if !(controlStartupTimeout < controlHandshakeTimeout) {
+		t.Fatalf("helper startup %s must be under our handshake wait %s", controlStartupTimeout, controlHandshakeTimeout)
+	}
+	if !(controlHandshakeTimeout < server.AttachTimeout) {
+		t.Fatalf("handshake wait %s must be under the session's attach bound %s", controlHandshakeTimeout, server.AttachTimeout)
+	}
+	// The helper rejects 0 (it means "wait forever" to nobody) with
+	// invalid_arguments, so whatever we pass must round to at least 1ms.
+	if controlStartupTimeout/time.Millisecond < 1 {
+		t.Fatal("--startup-timeout-ms must be at least 1")
 	}
 }
 
