@@ -283,6 +283,7 @@ The client sends:
 |---------|-------|---------|
 | boot    | `{"type":"boot","udid":"<udid>"}` | power on a simulator |
 | shutdown| `{"type":"shutdown","udid":"<udid>"}` | power off a simulator |
+| restart | `{"type":"restart","udid":"<udid>"}` | power-cycle a simulator: shut down, boot again, reply `booted`. The cure for a `display_not_ready` attach — see [Attaching](#attaching-a-simulator) |
 | attach  | `{"type":"attach","udid":"<udid>","scale":<0.25–1.0>,"bitrate":<bits/s>}` | start streaming this simulator's screen; `scale`/`bitrate` optional, see [Video quality](#video-quality) |
 | detach  | `{"type":"detach"}` | stop streaming |
 | tap     | `{"type":"tap","x":0.5,"y":0.5}` | tap at normalized [0,1] coordinates |
@@ -307,12 +308,18 @@ The daemon replies on the same channel:
 
 | Reply | Shape |
 |-------|-------|
-| hello    | `{"type":"hello","name":"<Mac name>","osVersion":"<macOS version>","paired":true,"version":"<semver>","caps":["touch","app_switcher"],"latestVersion":"<semver>"}` — `version` is the daemon's own version; `caps` lists the optional control features this daemon+backend forwards, and it is how a client learns it may stream `touch`/send `app_switcher` (**gate on membership; a hello without `caps` is a daemon ≤ v0.11 → assume the v1 gesture set** — the demo backend also advertises none, it swallows touch). `latestVersion` appears only when the daemon's daily GitHub-Releases check found a newer simbeamd; clients may show an "update the Mac side" nudge (`brew upgrade`) |
-| booted   | `{"type":"booted","udid":"<udid>"}` |
+| hello    | `{"type":"hello","name":"<Mac name>","osVersion":"<macOS version>","paired":true,"version":"<semver>","caps":["touch","app_switcher","lifecycle"],"latestVersion":"<semver>"}` — `version` is the daemon's own version; `caps` lists the optional control features this daemon+backend forwards, and it is how a client learns it may stream `touch`/send `app_switcher`/put lifecycle on `bulk` (**gate on membership; a hello without `caps` is a daemon ≤ v0.11 → assume the v1 gesture set** — the demo backend advertises only `lifecycle`, it swallows touch). `latestVersion` appears only when the daemon's daily GitHub-Releases check found a newer simbeamd; clients may show an "update the Mac side" nudge (`brew upgrade`) |
+| booted   | `{"type":"booted","udid":"<udid>"}` — from a `boot`, or from a completed `restart` |
 | shutdown | `{"type":"shutdown","udid":"<udid>"}` (if it was the streaming sim, a `detached` is sent first) |
-| attached | `{"type":"attached","w":<px>,"h":<px>}` (the simulator's **native** screen size — see below) |
-| detached | `{"type":"detached"}` |
-| error    | `{"type":"error","msg":"<reason>","code":"<machine code>"}` |
+| attaching | `{"type":"attaching","udid":"<udid>"}` — the attach was accepted; a terminal reply follows. See [Attaching](#attaching-a-simulator) |
+| attached | `{"type":"attached","udid":"<udid>","w":<px>,"h":<px>}` (the simulator's **native** screen size — see below) |
+| detached | `{"type":"detached","udid":"<udid>"}` — `udid` is the device that stopped, including one whose attach was still starting |
+| stream_ended | `{"type":"stream_ended","udid":"<udid>","msg":"<reason>"}` — the feed died on its own; **not** sent when you ended it |
+| error    | `{"type":"error","operation":"attach\|boot\|restart\|shutdown","udid":"<udid>","code":"<machine code>","retryable":<bool>,"msg":"<reason>"}` |
+
+`operation` says which request failed and `udid` which device, so a failure needs no correlation by
+arrival order. `retryable` says whether re-sending that same request unchanged is worth it; it is
+omitted when false.
 
 **The `hello` greeting** is the **first** message the daemon sends, pushed *unsolicited* the
 moment the client opens the `control` channel (before any command). It carries:
@@ -328,13 +335,27 @@ moment the client opens the `control` channel (before any command). It carries:
 
 **Bulk — a DataChannel labeled `bulk`** is **reliable and ordered**, and unlike `control` it is
 created by the **client**; the daemon routes it by label. It carries what `control` must not: a
-request too large for one message, or one that may not be silently dropped. Three requests exist:
+request too large for one message, or one that may not be silently dropped.
 
 | Request | Shape | Reply |
 |---------|-------|-------|
 | list       | `{"type":"list"}` | the Mac's simulators, `chunked` — header `{"type":"sims","bytes":N}` + binary chunks → JSON array `[{"udid":..,"name":..,"os_version":..,"state":..}, …]` (empty list → `[]`). Same framing as a screenshot; see [Chunked transfers](#chunked-transfers-screenshots-and-the-simulator-list) |
 | screenshot | `{"type":"screenshot"}` | a full-resolution PNG, `chunked` — see [Chunked transfers](#chunked-transfers-screenshots-and-the-simulator-list) |
 | quality    | `{"type":"quality","scale":<0.25–1.0>,"bitrate":<bits/s>}` | `{"type":"quality","scale":…,"bitrate":…}` — what actually took effect |
+| *lifecycle* | `boot`, `restart`, `attach`, `detach`, `shutdown` — byte for byte the messages from the `control` table | the same replies, delivered here instead |
+
+**Put lifecycle on `bulk` when the daemon advertises `lifecycle` in its `caps`.** Requests and
+replies are identical on both channels, so this is purely a choice of transport — but `control` may
+drop either half, and a lost `attach` looks exactly like a lost `attached`: the client can only sit
+and wait. Send input on `control`, where a stale tap is worse than a lost one, and lifecycle on
+`bulk`, where nothing is ever dropped.
+
+**A reply always comes back on the channel that carried the request**, so a daemon never answers on
+a channel you aren't reading. Once you have sent one lifecycle request on `bulk`, unsolicited
+lifecycle events (`stream_ended`) go there too.
+
+Lifecycle errors and request errors are both `{"type":"error"}` on this channel; the lifecycle ones
+carry `operation`, the `list`/`screenshot`/`quality` ones never do.
 
 **Every bulk frame — text or binary — is at most 1024 bytes.** The transfer must fit a single SCTP
 packet. On an IPv6 path (Tailscale, native cellular: 1280-byte minimum link MTU, no in-network
@@ -366,6 +387,75 @@ channel for up to 15s.
 **silent until you `attach` a simulator**. On `attach`, the daemon starts capturing that simulator
 and pushing H.264; on `detach` (or a new `attach`), it stops. You don't renegotiate the WebRTC
 session to switch simulators — the video track just goes quiet and resumes.
+
+### Attaching a simulator
+
+Attach is asynchronous, and it is the one lifecycle request that can take seconds: the daemon spawns
+a capture process and, on a cold-booted simulator, waits for the device to produce its first
+framebuffer. So it answers twice.
+
+```
+→ {"type":"attach","udid":"…"}
+← {"type":"attaching","udid":"…"}          accepted; the device that owns the outcome
+← {"type":"attached","udid":"…","w":…,"h":…}      … or exactly one of:
+← {"type":"error","operation":"attach","udid":"…","code":"display_not_ready","retryable":true,"msg":"…"}
+```
+
+**Every accepted attach ends, and within a bounded interval** (30s; the capture process is given
+less than that, so its own typed failure wins the race). It ends in one of four ways:
+
+- `attached` — streaming.
+- `error` with `operation: "attach"` — it failed, and `code` says why.
+- **a reply to something newer.** A `detach`, `shutdown` or `restart` you sent while the attach was
+  still starting cancels it, and *that* request's reply (`detached`, `shutdown`, `booted`) is the
+  end of the attach. The cancelled attach itself says nothing more — it must not, or you would get a
+  contradicting `attached` for a device you already dismissed.
+- **another `attaching`.** A second attach supersedes the first the same way.
+
+So: treat any `attaching` as "the previous attach is over", and any of `detached` / `shutdown` /
+`booted` as terminal for whatever attach was in flight. Nothing else is needed — no timers, no
+correlation ids.
+
+**The failure codes** come from the capture helper and are stable:
+
+| `code` | `retryable` | Meaning and what to do |
+|--------|-------------|------------------------|
+| `device_not_booted` | yes | The simulator is still coming up. `attach` again shortly. |
+| `display_not_ready` | yes | It booted but never produced a framebuffer within the helper's deadline. Retrying rarely helps — this is what `restart` is for. |
+| `device_not_found` | no | No such udid. Re-`list`. |
+| `core_simulator_unavailable` | no | The Mac's simulator subsystem is not usable (broken/absent Xcode). A human has to fix the Mac. |
+| `encoder_failed` | no | The video encoder could not start. |
+| `hid_unavailable` | no | Input could not be wired up. |
+| `invalid_arguments` | no | A daemon/helper version mismatch. Report it. |
+| `attach_failed` | no | The backend refused with no code of its own. |
+| `attach_timeout` | no | Neither a feed nor a typed failure inside the bound. Treat like `display_not_ready`: offer a restart. |
+
+**`retryable` is the only branch you need**: true → send the same `attach` again; false → offer the
+user a `restart` of that simulator, then attach again once `booted` lands. A restart works
+in-session — you never reconnect to the Mac.
+
+```
+← {"type":"error","operation":"attach","udid":"…","code":"display_not_ready","retryable":true}
+→ {"type":"restart","udid":"…"}
+← {"type":"booted","udid":"…"}       the device is freshly booted, and any feed it had is gone
+→ {"type":"attach","udid":"…"}
+```
+
+`restart` is deliberately quiet about the feed it drops: you asked for it, so there is no `detached`
+and no `stream_ended` — just `booted` when the device is back. It can hold the channel for the
+length of a shutdown+boot cycle, so keep one request in flight.
+
+**`stream_ended` is the opposite case: a feed that died without being asked to.** The capture
+process exited, the simulator went away, or the track broke.
+
+```
+← {"type":"stream_ended","udid":"…","msg":"…"}
+```
+
+You get it *only* for deaths you did not cause. Ending the feed yourself — `detach`, `shutdown`,
+`restart`, a new `attach`, or the session closing — is confirmed by that request's own reply and
+never doubled with a `stream_ended`. On receiving one, the daemon is already idle: drop your video
+UI and `attach` again if you want the stream back.
 
 ### Chunked transfers (screenshots and the simulator list)
 
@@ -450,8 +540,9 @@ your decoder, resolution change included. `<video>` (or your native decoder) wil
 dimensions on its own.
 
 Note the reply comes back **immediately**, before the new feed is up — it confirms the daemon
-accepted the values, not that the picture has changed. If the re-attach then fails, that surfaces on
-`control` as an `error`, exactly like any other failed attach.
+accepted the values, not that the picture has changed. The rebuild's own outcome follows like any
+other attach's — `attached`, or one typed `error` with `operation: "attach"` — on whichever channel
+you send lifecycle on (`control` if you have never sent lifecycle over `bulk`).
 
 **`quality` needs a live feed.** With nothing attached it replies `error` — it is a change to a
 running stream, not a stored preference. Put the starting quality on `attach`.
@@ -498,10 +589,13 @@ control codes:
 | `pair_expired` | daemon | The pairing window expired (TTL passed) or was cancelled. Generate a fresh QR. |
 | `pair_used`    | daemon | The one-time pairing secret was already consumed by a successful pairing. Generate a fresh QR. |
 | `pair_invalid` | daemon | No pairing window is open, or the enrollment proof didn't match. |
+| `bad_request`  | daemon | The lifecycle request was malformed — a `boot`/`attach`/`restart`/`shutdown` with no `udid`. |
+| `boot_failed` / `shutdown_failed` / `restart_failed` | daemon | That power operation failed on the Mac; `msg` carries the toolchain's reason. |
+| attach codes   | daemon | Listed with [Attaching a simulator](#attaching-a-simulator) — they carry `retryable` too. |
 
 `pair_*` codes accompany a rejected `join`/`connect` during pairing; `offline` comes back when you
-`join` a Mac that isn't online. An `error` with no `code` is a generic failure (e.g. a control
-command that failed for some operational reason) — surface its `msg`.
+`join` a Mac that isn't online. Lifecycle failures also carry `operation` (which request failed) and
+`udid` (which device). An `error` with no `code` is a generic failure — surface its `msg`.
 
 ---
 
@@ -625,7 +719,7 @@ Rules and behavior:
 | **WebRTC** | The browser/native standard for real-time peer-to-peer audio/video/data. Carries the video and control channel. |
 | **SDP** | Session Description Protocol — the text blob describing a WebRTC connection, exchanged as **offer** and **answer**. |
 | **Offerer / Answerer** | In a WebRTC handshake, the side that proposes the session (client) vs. the side that responds (daemon). |
-| **DataChannel** | A WebRTC channel for arbitrary data, separate from the media track. Two here: `control` (commands/input, unreliable) and `bulk` (screenshots and quality changes, reliable+ordered). |
+| **DataChannel** | A WebRTC channel for arbitrary data, separate from the media track. Two here: `control` (input, unreliable) and `bulk` (screenshots, quality and lifecycle — reliable+ordered). |
 | **ICE** | Interactive Connectivity Establishment — how WebRTC discovers a working network path between two peers. |
 | **ICE candidate / host candidate** | A possible address/path for the connection; a *host* candidate is a direct local-network address. |
 | **STUN** | A lightweight server that tells a peer its public address so two peers can connect **directly**. Free, always offered. |
