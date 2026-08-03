@@ -66,8 +66,12 @@ with `simbeamd unpair <clientPubKey>`. The daemon's identity lives in `~/.simbea
 *A real session: the simulator on the left, an SSH shell into the Mac on the right —
 the iPad is the only machine on the table.*
 
-> Want to drive it from a browser instead of the native client? Run with `--web ./web/debug`
-> and open the printed pairing URL — a reference debug client implements the full WebRTC flow.
+> **No iPad? The pairing URL is a plain web link.** Open it in any browser instead of scanning
+> it and you get the same session there — nothing to install. Release builds bake in the hosted
+> client at [app.simbeam.dev](https://app.simbeam.dev)
+> ([source](https://github.com/kei-sidorov/simbeam-web)); point the link elsewhere with
+> `--client-url`. Building from source, `make run-remote` serves the local reference client from
+> `web/debug` instead.
 
 ## How it works
 
@@ -111,7 +115,8 @@ keyframes (~1s) and a constant frame rate straight from the framebuffer, no re-e
 |------|------------|
 | **`simbeamd`** | macOS daemon. Boots/streams a simulator, serves video over WebRTC, injects input. Open source (this repo). |
 | **`simbeam-signal`** | Reference signalling broker. Rendezvous over WSS, relays the SDP handshake, issues short-lived TURN credentials. Open source (this repo). |
-| **iPad client** | Native WebRTC client. Separate, paid product in its own repo — built once the server side is proven in the browser. |
+| **Web client** | Browser client at [app.simbeam.dev](https://app.simbeam.dev) — the pairing URL opens straight into it, no install. Lives in its [own repo](https://github.com/kei-sidorov/simbeam-web). |
+| **iPad client** | Native WebRTC client, [on the App Store](https://apps.apple.com/app/simbeam/id6788377942). Separate, paid product in its own repo. |
 
 simbeam is **open-core**: the server is OSS, the polished client is the commercial product.
 The protocol is open; the moat is client UX and managed cloud infrastructure.
@@ -188,7 +193,7 @@ simbeam/
 ├── cmd/simbeamd/         # macOS daemon (boot, stream, input, pairing)
 ├── cmd/simbeam-signal/   # reference signalling broker
 ├── internal/             # companion (simctl lifecycle), backend/sim (simbeam-control), rtc (pion), ...
-├── web/debug/            # browser reference client (served with --web)
+├── web/debug/            # local dev reference client (served with --web; prod client is simbeam-web)
 ├── deploy/               # self-host scaffolding (systemd, Caddy, coturn, updater)
 └── docs/                 # architecture, roadmap, decision log
 ```
