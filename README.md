@@ -1,6 +1,6 @@
 # simbeam
 
-[![Release](https://img.shields.io/github/v/release/kei-sidorov/simbeam?sort=semver)](https://github.com/kei-sidorov/simbeam/releases) [![CI](https://img.shields.io/github/actions/workflow/status/kei-sidorov/simbeam/ci.yml?branch=main&label=ci)](https://github.com/kei-sidorov/simbeam/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8.svg)](https://go.dev) [![Platform macOS](https://img.shields.io/badge/platform-macOS-000000.svg)](https://www.apple.com/macos/) [![Homebrew cask](https://img.shields.io/badge/Homebrew-cask-FBB040.svg)](#install) [![App Store](https://img.shields.io/badge/iPad%20client-App%20Store-0D96F6.svg)](https://apps.apple.com/app/simbeam/id6788377942)
+[![Release](https://img.shields.io/github/v/release/kei-sidorov/simbeam?sort=semver)](https://github.com/kei-sidorov/simbeam/releases) [![CI](https://img.shields.io/github/actions/workflow/status/kei-sidorov/simbeam/ci.yml?branch=main&label=ci)](https://github.com/kei-sidorov/simbeam/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8.svg)](https://go.dev) [![Platform macOS](https://img.shields.io/badge/platform-macOS-000000.svg)](https://www.apple.com/macos/) [![Homebrew cask](https://img.shields.io/badge/Homebrew-cask-FBB040.svg)](#install) [![App Store](https://img.shields.io/badge/iPad%20client-App%20Store-0D96F6.svg)](https://apps.apple.com/app/simbeam/id6788377942) [![Apache 2.0 license](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 **Stream an iOS Simulator from your Mac to an iPad (or browser) for remote development.**
 
@@ -206,3 +206,9 @@ reasoning.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — phases and their definition of done.
 - [`docs/decisions.md`](docs/decisions.md) — chronological decision log (ADR-lite).
 - [`deploy/README.md`](deploy/README.md) — self-hosting the broker + TURN.
+
+## License
+
+`simbeamd` and `simbeam-signal` — everything in this repository — are licensed under the
+[Apache License 2.0](LICENSE). The iPad client is a separate, proprietary product and is not
+covered by it.
