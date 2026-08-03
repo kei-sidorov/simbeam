@@ -1,5 +1,7 @@
 # simbeam
 
+[![Release](https://img.shields.io/github/v/release/kei-sidorov/simbeam?sort=semver)](https://github.com/kei-sidorov/simbeam/releases) [![CI](https://img.shields.io/github/actions/workflow/status/kei-sidorov/simbeam/ci.yml?branch=main&label=ci)](https://github.com/kei-sidorov/simbeam/actions/workflows/ci.yml) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8.svg)](https://go.dev) [![Platform macOS](https://img.shields.io/badge/platform-macOS-000000.svg)](https://www.apple.com/macos/) [![Homebrew cask](https://img.shields.io/badge/Homebrew-cask-FBB040.svg)](#install) [![App Store](https://img.shields.io/badge/iPad%20client-App%20Store-0D96F6.svg)](https://apps.apple.com/app/simbeam/id6788377942)
+
 **Stream an iOS Simulator from your Mac to an iPad (or browser) for remote development.**
 
 Run the iOS Simulator on a Mac, then see and control it from anywhere. Taps, swipes, the
@@ -9,6 +11,10 @@ WebRTC link. The Mac makes only outbound connections — **zero open ports**.
 > **Simulators only.** Real devices are explicitly out of scope ([why](docs/ARCHITECTURE.md)).
 
 **[Get the iOS app](https://apps.apple.com/app/simbeam/id6788377942)** · **[simbeam.dev](https://simbeam.dev)**
+
+![simbeamd printing a pairing QR code in the terminal](docs/images/pairing-terminal.png)
+
+*One command on the Mac. Press **P**, scan the QR with the iPad — that is the whole setup.*
 
 ---
 
@@ -54,6 +60,11 @@ Press **P** in the daemon terminal to open a one-time pairing window — it prin
 and a QR code. Scan it (or open the URL) and confirm **Pair this Mac**. The client remembers the
 Mac by its public key and reconnects automatically afterwards — no QR next time. Revoke a device
 with `simbeamd unpair <clientPubKey>`. The daemon's identity lives in `~/.simbeam/` (0600).
+
+<img src="docs/images/ipad-session.jpg" alt="An iPad running the simbeam client side by side with a terminal session" width="720">
+
+*A real session: the simulator on the left, an SSH shell into the Mac on the right —
+the iPad is the only machine on the table.*
 
 > Want to drive it from a browser instead of the native client? Run with `--web ./web/debug`
 > and open the printed pairing URL — a reference debug client implements the full WebRTC flow.
