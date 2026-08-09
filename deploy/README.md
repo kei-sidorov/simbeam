@@ -57,11 +57,20 @@ streamed exactly like a simulator (App Review, try-before-you-buy). No macOS
 required:
 
 ```bash
-apt-get install -y chromium ffmpeg
+apt-get install -y ffmpeg
+# On Ubuntu the apt `chromium` package is a snap shim and does not run under the
+# unit's sandbox — install Google's .deb instead (chromedp finds it on PATH):
+curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+apt-get install -y /tmp/chrome.deb
+
 # grab the linux simbeamd from the same GitHub release the updater uses:
 curl -fsSL -o /tmp/simbeamd.tgz \
   "https://github.com/kei-sidorov/simbeam/releases/latest/download/simbeamd_<version>_linux_amd64.tar.gz"
 tar -xzf /tmp/simbeamd.tgz -C /usr/local/bin simbeamd
+
+# the demo page itself lives on the box, under the unit's StateDirectory:
+install -d -o simbeam -g simbeam /var/lib/simbeam/demo
+install -o simbeam -g simbeam -m 0644 web/demo/index.html /var/lib/simbeam/demo/index.html
 
 cp deploy/systemd/simbeamd-demo.service /etc/systemd/system/
 cp deploy/demo.env.example /etc/simbeam/demo.env && chmod 600 /etc/simbeam/demo.env
@@ -72,10 +81,11 @@ journalctl -u simbeamd-demo --no-pager | grep -A3 "Pairing URL"
 
 The logged pairing URL is **multi-use** (the enrollment window re-arms after every
 pairing) and stable across restarts thanks to the fixed secret — put it in App
-Review notes or a "try the demo" button. If Chromium refuses to start under the
-unprivileged unit user (Ubuntu ≥23.10 restricts user namespaces for non-apt
-binaries), prefer the distro `chromium` package; `--chrome-no-sandbox` in
-`SIMCAST_DEMO_ARGS` is the last resort.
+Review notes or a "try the demo" button. It changes only if the daemon's identity
+key (`/var/lib/simbeam/demo-identity.key`) is lost — a rebuilt box means new notes.
+If Chrome refuses to start under the unprivileged unit user (Ubuntu ≥23.10
+restricts user namespaces for non-apt binaries), `--chrome-no-sandbox` in
+`SIMCAST_DEMO_ARGS` is the last resort; the Google .deb has not needed it.
 
 **Firewall — REQUIRED for the demo (and easy to miss).** Unlike a Mac daemon
 behind home NAT (which only makes outbound connections), the demo daemon runs on
