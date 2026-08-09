@@ -238,6 +238,7 @@ CLIENT                         BROKER                         DAEMON
   │                                                             │
   │  offer(sdp) ────────────────►│  offer(sdp) ────────────────►│
   │◄ answer(sdp, sig) ───────────│◄ answer(sdp, sig) ───────────│
+  │  candidate ────────────────►│   candidate ────────────────►│   (trickle, both ways)
   │                                                             │
   │═══════ direct peer-to-peer WebRTC (video + control) ════════│
 ```
@@ -254,12 +255,24 @@ CLIENT                         BROKER                         DAEMON
    - The broker verifies `brokerSig` independently → confirms the client's key for TURN gating,
      then removes `brokerSig` before forwarding.
 4. **iceServers** — the broker sends each side the ICE configuration to use (STUN always; TURN if
-   the client has an active subscription). See [TURN](#turn-and-subscriptions).
+   the client has an active subscription). See [TURN](#turn-and-subscriptions). The same message
+   carries the trickle verdict (step 6).
 5. **offer / answer** — the client (offerer) sends a standard WebRTC SDP **offer**. The daemon
    (answerer) replies with an SDP **answer** *and signs it* with its private key:
    `{ "type":"answer", "sdp":"<...>", "sig":"<sign(sdp)>" }`. The client verifies `sig` against the
    pinned `daemonID` — this is the anti-MITM check that proves the answer came from the real Mac and
    not a broker substituting its own.
+6. **candidate** *(trickle ICE)* — instead of holding the offer/answer until ICE gathering has
+   finished (which means waiting for the slowest TURN allocation, seconds on mobile), each side
+   sends its SDP immediately and streams candidates as they appear:
+   `{ "type":"candidate", "candidate":"candidate:...", "sdpMid":"0", "sdpMLineIndex":0 }`, with an
+   empty `candidate` marking end-of-candidates. Both peers opt in — the daemon with
+   `"trickle":true` on `register`, the client on `join` — and the broker ANDs the two onto the
+   `iceServers` message. Anything missing that field (an older broker, daemon, or client) falls
+   back to the original all-candidates-inside-the-SDP behaviour.
+   Trickled candidates ride outside the answer signature. A hostile broker could inject one, but
+   the DTLS fingerprint stays inside the *signed* SDP, so an injected candidate cannot impersonate
+   the Mac — it can only waste connectivity checks.
 
 After the answer, ICE completes and the WebRTC connection comes up **directly between client and
 Mac**. The broker's job is done.

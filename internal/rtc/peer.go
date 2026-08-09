@@ -28,11 +28,14 @@ var ErrNoBulkChannel = errors.New("rtc: bulk channel not open")
 type Session struct {
 	pc         *webrtc.PeerConnection
 	track      *webrtc.TrackLocalStaticSample
-	mu         sync.Mutex // guards onClose, onCtrlOpen, ctrl and bulk
+	mu         sync.Mutex // guards onClose, onCtrlOpen, onCand, ctrl, bulk, remoteSet and pending
 	onClose    func()
 	onCtrlOpen func()
+	onCand     func(*webrtc.ICECandidate)
 	ctrl       *webrtc.DataChannel
 	bulk       *webrtc.DataChannel
+	remoteSet  bool                      // the remote description has been applied
+	pending    []webrtc.ICECandidateInit // trickled candidates that arrived before it
 	closeOnce  sync.Once
 }
 
@@ -57,6 +60,14 @@ func New(onControl, onBulk func([]byte), iceServers []webrtc.ICEServer) (*Sessio
 		return nil, err
 	}
 	s := &Session{pc: pc, track: track}
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		s.mu.Lock()
+		fn := s.onCand
+		s.mu.Unlock()
+		if fn != nil {
+			fn(c) // nil c = gathering complete
+		}
+	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		switch dc.Label() {
 		case "control":
@@ -111,17 +122,38 @@ func New(onControl, onBulk func([]byte), iceServers []webrtc.ICEServer) (*Sessio
 	return s, nil
 }
 
-// Answer consumes a remote offer SDP and returns the local answer SDP, blocking
-// until ICE gathering completes (non-trickle; instant on localhost).
+// Answer consumes a remote offer SDP and returns the local answer SDP. Without
+// OnCandidate it blocks until ICE gathering completes, so the answer carries
+// every candidate (non-trickle; instant on localhost). With OnCandidate set it
+// returns as soon as the local description exists and the candidates follow
+// through that callback.
 func (s *Session) Answer(offerSDP string) (string, error) {
 	if err := s.pc.SetRemoteDescription(webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer, SDP: offerSDP,
 	}); err != nil {
 		return "", err
 	}
+	s.mu.Lock()
+	s.remoteSet = true
+	pending, trickle := s.pending, s.onCand != nil
+	s.pending = nil
+	s.mu.Unlock()
+	for _, c := range pending {
+		if err := s.pc.AddICECandidate(c); err != nil {
+			log.Printf("rtc: buffered candidate rejected: %v", err)
+		}
+	}
 	answer, err := s.pc.CreateAnswer(nil)
 	if err != nil {
 		return "", err
+	}
+	if trickle {
+		// No GatheringCompletePromise: don't wait, and don't hand pion a second
+		// gather-complete hook when OnCandidate already reports the end.
+		if err := s.pc.SetLocalDescription(answer); err != nil {
+			return "", err
+		}
+		return s.pc.LocalDescription().SDP, nil
 	}
 	done := webrtc.GatheringCompletePromise(s.pc)
 	if err := s.pc.SetLocalDescription(answer); err != nil {
@@ -129,6 +161,29 @@ func (s *Session) Answer(offerSDP string) (string, error) {
 	}
 	<-done
 	return s.pc.LocalDescription().SDP, nil
+}
+
+// OnCandidate registers a sink for locally gathered ICE candidates, which also
+// switches Answer to trickle mode. fn is called with nil once gathering
+// completes. Must be set before Answer; safe to call from any goroutine.
+func (s *Session) OnCandidate(fn func(*webrtc.ICECandidate)) {
+	s.mu.Lock()
+	s.onCand = fn
+	s.mu.Unlock()
+}
+
+// AddCandidate applies one trickled remote candidate (empty Candidate =
+// end-of-candidates). Candidates that arrive before the offer is applied are
+// buffered, because pion rejects them until the remote description is set.
+func (s *Session) AddCandidate(c webrtc.ICECandidateInit) error {
+	s.mu.Lock()
+	if !s.remoteSet {
+		s.pending = append(s.pending, c)
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	return s.pc.AddICECandidate(c)
 }
 
 // WriteFrame writes one H.264 access unit to the video track.

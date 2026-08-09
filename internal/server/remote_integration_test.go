@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,9 +83,10 @@ func newOfferer(t *testing.T) (pc *webrtc.PeerConnection, ctrl, bulk chan []byte
 }
 
 // joinUntilPresent dials the broker and sends join (with an enrollment proof when
-// pairSecret != ""), retrying until the daemon is registered. Returns the open ws
-// and the first non-offline message (a challenge on success).
-func joinUntilPresent(t *testing.T, ctx context.Context, wsURL, daemonID, clientPub string, clientPriv ed25519.PrivateKey, pairSecret string) (*websocket.Conn, signal.Msg) {
+// pairSecret != "", declaring trickle ICE when trickle), retrying until the daemon
+// is registered. Returns the open ws and the first non-offline message (a
+// challenge on success).
+func joinUntilPresent(t *testing.T, ctx context.Context, wsURL, daemonID, clientPub string, clientPriv ed25519.PrivateKey, pairSecret string, trickle bool) (*websocket.Conn, signal.Msg) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -95,7 +97,7 @@ func joinUntilPresent(t *testing.T, ctx context.Context, wsURL, daemonID, client
 		if derr != nil {
 			t.Fatalf("dial broker: %v", derr)
 		}
-		join := signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: daemonID, PubKey: clientPub}
+		join := signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: daemonID, PubKey: clientPub, Trickle: trickle}
 		if pairSecret != "" {
 			nonce, _ := signal.NewNonce()
 			join.Nonce = nonce
@@ -120,39 +122,87 @@ func joinUntilPresent(t *testing.T, ctx context.Context, wsURL, daemonID, client
 
 // runHandshake completes the client side: sign the challenge nonces, send the
 // offer when iceServers arrive, verify the signed answer against daemonID, and
-// apply it. Returns the iceServers the broker issued (for gate assertions).
+// apply it. When the broker's iceServers says trickle, the offer goes out
+// immediately and candidates are exchanged as messages (buffering the daemon's
+// until the answer is applied, as a real client must). Returns the iceServers
+// the broker issued (for gate assertions).
 func runHandshake(t *testing.T, ws *websocket.Conn, pc *webrtc.PeerConnection, daemonID string, clientPriv ed25519.PrivateKey, first signal.Msg) []signal.ICEServer {
 	t.Helper()
 	var ice []signal.ICEServer
 	offerSent := false
+	// pion fires OnICECandidate on its own goroutine, so writes must serialize.
+	var wmu sync.Mutex
+	send := func(m signal.Msg) { wmu.Lock(); defer wmu.Unlock(); _ = ws.WriteJSON(m) }
+	trickle, remoteSet, eoc := false, false, false
+	var pending []signal.Msg
+	// Under trickle the handshake isn't over at the answer: the daemon's
+	// candidates arrive after it, and without them the client has nothing to
+	// pair against. Keep reading until it says end-of-candidates.
+	finished := func() bool { return remoteSet && (!trickle || eoc) }
+	addCand := func(m signal.Msg) {
+		init := webrtc.ICECandidateInit{Candidate: m.Candidate, SDPMLineIndex: m.SDPMLineIndex}
+		if m.SDPMid != "" {
+			init.SDPMid = &m.SDPMid
+		}
+		if err := pc.AddICECandidate(init); err != nil {
+			t.Errorf("AddICECandidate: %v", err)
+		}
+	}
 
 	handle := func(m signal.Msg) (done bool) {
 		switch m.Type {
 		case signal.TypeChallenge:
-			_ = ws.WriteJSON(signal.Msg{
+			send(signal.Msg{
 				Type:      signal.TypeProof,
 				Sig:       signal.Sign(clientPriv, []byte(m.Nonce)),
 				BrokerSig: signal.Sign(clientPriv, []byte(m.BrokerNonce)),
 			})
 		case signal.TypeICEServers:
-			ice = m.ICEServers
+			ice, trickle = m.ICEServers, m.Trickle
 			if !offerSent {
 				offer, err := pc.CreateOffer(nil)
 				if err != nil {
 					t.Fatalf("CreateOffer: %v", err)
 				}
 				gathered := webrtc.GatheringCompletePromise(pc)
+				if m.Trickle {
+					pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+						if c == nil {
+							send(signal.Msg{Type: signal.TypeCandidate}) // end-of-candidates
+							return
+						}
+						i := c.ToJSON()
+						cm := signal.Msg{Type: signal.TypeCandidate, Candidate: i.Candidate, SDPMLineIndex: i.SDPMLineIndex}
+						if i.SDPMid != nil {
+							cm.SDPMid = *i.SDPMid
+						}
+						send(cm)
+					})
+				}
 				if err := pc.SetLocalDescription(offer); err != nil {
 					t.Fatalf("SetLocalDescription: %v", err)
 				}
-				select {
-				case <-gathered:
-				case <-time.After(5 * time.Second):
-					t.Fatalf("ICE gathering did not complete")
+				if !m.Trickle {
+					select {
+					case <-gathered:
+					case <-time.After(5 * time.Second):
+						t.Fatalf("ICE gathering did not complete")
+					}
 				}
-				_ = ws.WriteJSON(signal.Msg{Type: signal.TypeOffer, SDP: pc.LocalDescription().SDP})
+				send(signal.Msg{Type: signal.TypeOffer, SDP: pc.LocalDescription().SDP})
 				offerSent = true
 			}
+		case signal.TypeCandidate:
+			if m.Candidate == "" {
+				eoc = true
+			}
+			// May overtake the answer: pion rejects candidates until the remote
+			// description is set, so hold them like a real client does.
+			if !remoteSet {
+				pending = append(pending, m)
+				return finished()
+			}
+			addCand(m)
 		case signal.TypeAnswer:
 			if !signal.Verify(daemonID, []byte(m.SDP), m.Sig) {
 				t.Fatalf("answer signature failed against daemonID (anti-MITM)")
@@ -160,13 +210,18 @@ func runHandshake(t *testing.T, ws *websocket.Conn, pc *webrtc.PeerConnection, d
 			if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: m.SDP}); err != nil {
 				t.Fatalf("SetRemoteDescription: %v", err)
 			}
-			return true
+			remoteSet = true
+			for _, c := range pending {
+				addCand(c)
+			}
+			pending = nil
+			return finished()
 		case signal.TypeError:
 			t.Fatalf("handshake error: %s", m.Msg)
 		case signal.TypePeerLeft:
 			t.Fatalf("peer left mid-handshake")
 		}
-		return false
+		return finished()
 	}
 
 	if handle(first) {
@@ -315,7 +370,7 @@ func TestEnrollmentEndToEnd(t *testing.T) {
 
 	clientPub, clientPriv, _ := signal.GenerateKeyPair()
 	pc, ctrl, bulk := newOfferer(t)
-	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret)
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret, false)
 	t.Cleanup(func() { _ = ws.Close() })
 
 	runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
@@ -360,7 +415,7 @@ func TestHelloCarriesHostInfo(t *testing.T) {
 	})
 
 	pc, ctrl, _ := newOfferer(t)
-	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "", false)
 	t.Cleanup(func() { _ = ws.Close() })
 	runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
 
@@ -371,6 +426,34 @@ func TestHelloCarriesHostInfo(t *testing.T) {
 	if !hello.Paired {
 		t.Fatalf("hello must carry paired:true (pin-ack), got %+v", hello)
 	}
+}
+
+// TestTrickleICEEndToEnd: with both peers declaring trickle, the daemon's answer
+// carries no candidates (they arrive as candidate messages instead) and the peer
+// still connects — the control channel opens and the hello lands (issue #5).
+func TestTrickleICEEndToEnd(t *testing.T) {
+	wsURL := brokerFixture(t, signalbroker.Config{STUNURLs: []string{"stun:stun.l.google.com:19302"}})
+
+	pub, priv, _ := signal.GenerateKeyPair()
+	id := Identity{PubB64: pub, Priv: priv}
+
+	clientPub, clientPriv, _ := signal.GenerateKeyPair()
+	pinned, _ := LoadPinnedStore(t.TempDir() + "/clients.json")
+	_ = pinned.Add(clientPub, "iPad")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	startDaemon(t, ctx, wsURL, id, pinned, NewPairingWindow())
+
+	pc, ctrl, _ := newOfferer(t)
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "", true)
+	t.Cleanup(func() { _ = ws.Close() })
+	runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
+
+	if sdp := pc.RemoteDescription().SDP; strings.Contains(sdp, "a=candidate") {
+		t.Fatalf("trickle answer should carry no candidates:\n%s", sdp)
+	}
+	expectHello(t, ctrl, pc)
 }
 
 // TestReconnectByDaemonID: a pre-pinned client connects with NO secret (key-only
@@ -392,7 +475,7 @@ func TestReconnectByDaemonID(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		pc, _, bulk := newOfferer(t)
-		ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
+		ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "", false)
 		runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
 		expectSims(t, bulk, pc)
 		_ = ws.Close()
@@ -424,7 +507,7 @@ func TestServeSignalReturnsOnCancelWhileConnected(t *testing.T) {
 
 	// Gate on the daemon actually being registered — so serveOnce is now blocked
 	// in the read loop, not still dialing (which has its own ctx-aware path).
-	ws, _ := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
+	ws, _ := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "", false)
 	t.Cleanup(func() { _ = ws.Close() })
 
 	cancel()
@@ -448,7 +531,7 @@ func TestUnpinnedClientRejected(t *testing.T) {
 	startDaemon(t, ctx, wsURL, id, pinned, NewPairingWindow())
 
 	stranger, strangerPriv, _ := signal.GenerateKeyPair()
-	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, stranger, strangerPriv, "")
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, stranger, strangerPriv, "", false)
 	t.Cleanup(func() { _ = ws.Close() })
 
 	// The daemon must answer the challenge with an error ("not paired"). Sign the
@@ -479,7 +562,7 @@ func TestExpiredPairingCodeTyped(t *testing.T) {
 	startDaemon(t, ctx, wsURL, id, pinned, win)
 
 	clientPub, clientPriv, _ := signal.GenerateKeyPair()
-	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret)
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret, false)
 	t.Cleanup(func() { _ = ws.Close() })
 	if first.Type != signal.TypeError || first.Code != signal.CodePairExpired {
 		t.Fatalf("want typed %q error, got %+v", signal.CodePairExpired, first)
@@ -510,7 +593,7 @@ func TestUsedPairingCodeTyped(t *testing.T) {
 	startDaemon(t, ctx, wsURL, id, pinned, win)
 
 	clientPub, clientPriv, _ := signal.GenerateKeyPair()
-	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret)
+	ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, secret, false)
 	t.Cleanup(func() { _ = ws.Close() })
 	if first.Type != signal.TypeError || first.Code != signal.CodePairUsed {
 		t.Fatalf("want typed %q error, got %+v", signal.CodePairUsed, first)
@@ -552,7 +635,7 @@ func TestTurnGateBySubscription(t *testing.T) {
 	connect := func(clientPub string, clientPriv ed25519.PrivateKey) []signal.ICEServer {
 		_ = pinned.Add(clientPub, "")
 		pc, _, bulk := newOfferer(t)
-		ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "")
+		ws, first := joinUntilPresent(t, ctx, wsURL, id.PubB64, clientPub, clientPriv, "", false)
 		ice := runHandshake(t, ws, pc, id.PubB64, clientPriv, first)
 		expectSims(t, bulk, pc)
 		_ = ws.Close()

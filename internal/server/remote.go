@@ -37,6 +37,24 @@ func signedAnswer(sdp string, priv ed25519.PrivateKey) signal.Msg {
 	return signal.Msg{Type: signal.TypeAnswer, SDP: sdp, Sig: signal.Sign(priv, []byte(sdp))}
 }
 
+// candidateMsg wraps one locally gathered candidate for the wire; nil (pion's
+// end-of-gathering signal) becomes the empty end-of-candidates message.
+// Trickled candidates ride OUTSIDE the answer signature: a hostile broker could
+// inject one, but the DTLS fingerprint stays inside the signed SDP, so an
+// injected candidate cannot impersonate the daemon — it only buys wasted
+// connectivity checks against an address of the broker's choosing.
+func candidateMsg(c *webrtc.ICECandidate) signal.Msg {
+	if c == nil {
+		return signal.Msg{Type: signal.TypeCandidate}
+	}
+	i := c.ToJSON()
+	m := signal.Msg{Type: signal.TypeCandidate, Candidate: i.Candidate, SDPMLineIndex: i.SDPMLineIndex}
+	if i.SDPMid != nil {
+		m.SDPMid = *i.SDPMid
+	}
+	return m
+}
+
 // ServeSignal keeps a persistent registration on the broker under the daemon's
 // identity and serves reconnecting pinned clients one at a time, forever, with
 // exponential-backoff auto-reconnect. win is the (possibly closed) enrollment
@@ -131,7 +149,7 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 	var wmu sync.Mutex
 	send := func(m signal.Msg) error { wmu.Lock(); defer wmu.Unlock(); return ws.WriteJSON(m) }
 
-	if err := send(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon, Daemon: id.PubB64}); err != nil {
+	if err := send(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon, Daemon: id.PubB64, Trickle: true}); err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
 	// Dialed and announced presence on the broker: we're live. Reports recovery
@@ -144,6 +162,7 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 		disp       *rtcDispatch
 		sessCancel context.CancelFunc
 		iceServers []webrtc.ICEServer
+		trickle    bool // broker's verdict: both peers speak trickle ICE
 		authPub    string
 		authNonce  string
 		enrolling  bool
@@ -162,7 +181,7 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 		}
 		sess, disp, sessCancel = nil, nil, nil
 		authPub, authNonce, enrolling, authed = "", "", false, false
-		iceServers = nil
+		iceServers, trickle = nil, false
 	}
 	defer cleanup()
 
@@ -214,7 +233,7 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 			authPub, authNonce, enrolling, authed = m.PubKey, nonce, enr, false
 			_ = send(signal.Msg{Type: signal.TypeChallenge, Nonce: nonce})
 		case signal.TypeICEServers:
-			iceServers = toWebRTC(m.ICEServers)
+			iceServers, trickle = toWebRTC(m.ICEServers), m.Trickle
 		case signal.TypeProof:
 			if authPub == "" || !signal.Verify(authPub, []byte(authNonce), m.Sig) {
 				_ = send(signal.Msg{Type: signal.TypeError, Msg: "challenge failed"})
@@ -241,6 +260,7 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 				_ = send(signal.Msg{Type: signal.TypeError, Msg: "unauthenticated"})
 				continue
 			}
+			t0 := time.Now()
 			sctx, cancel := context.WithCancel(ctx)
 			ns, nd, serr := s.startSession(sctx, iceServers)
 			if serr != nil {
@@ -254,6 +274,13 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 			// silent ICE failure). stopAttachment is idempotent, so the later
 			// cleanup() calling it again is harmless.
 			ns.OnClose(func() { cancel(); nd.stopAttachment() })
+			if trickle {
+				// Set before Answer: this is what makes Answer return without
+				// waiting for gathering. Fires on pion's goroutine — send is
+				// mutex-guarded, so it may race the answer below; the client
+				// buffers candidates that overtake it.
+				ns.OnCandidate(func(c *webrtc.ICECandidate) { _ = send(candidateMsg(c)) })
+			}
 			answerSDP, aerr := ns.Answer(m.SDP)
 			if aerr != nil {
 				_ = send(signal.Msg{Type: signal.TypeError, Msg: aerr.Error()})
@@ -261,6 +288,19 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 				continue
 			}
 			_ = send(signedAnswer(answerSDP, id.Priv))
+			log.Printf("signal: answer sent %s after offer (trickle=%v)",
+				time.Since(t0).Round(time.Millisecond), trickle)
+		case signal.TypeCandidate:
+			if sess == nil {
+				continue
+			}
+			init := webrtc.ICECandidateInit{Candidate: m.Candidate, SDPMLineIndex: m.SDPMLineIndex}
+			if m.SDPMid != "" {
+				init.SDPMid = &m.SDPMid
+			}
+			if err := sess.AddCandidate(init); err != nil {
+				log.Printf("signal: remote candidate rejected: %v", err)
+			}
 		case signal.TypePeerLeft:
 			if sess != nil {
 				log.Printf("signal: peerLeft from broker — tearing down live session of %.12s…", authPub)

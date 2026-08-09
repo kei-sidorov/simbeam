@@ -271,3 +271,78 @@ func TestSecondClientDisplacesFirst(t *testing.T) {
 		t.Fatalf("daemon never received connect for the second client")
 	}
 }
+
+// TestTrickleNegotiationAndRelay: the broker ANDs the daemon's register
+// declaration with the client's join declaration onto the iceServers message
+// both peers get, and relays candidate messages in both directions.
+func TestTrickleNegotiationAndRelay(t *testing.T) {
+	b := New(Config{STUNURLs: []string{"stun:x"}})
+	srv := httptest.NewServer(b.Handler())
+	defer srv.Close()
+	url := wsURL(t, srv)
+
+	clientPub, clientPriv, err := signal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// handshake runs one client up to iceServers and returns the verdict both
+	// peers were told, plus the live sockets.
+	handshake := func(daemonTrickle, clientTrickle bool) (daemon, client *websocket.Conn, verdict bool) {
+		daemon = dial(t, url)
+		_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon,
+			Daemon: "D", Trickle: daemonTrickle})
+		client = dial(t, url)
+		_ = client.WriteJSON(signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient,
+			Daemon: "D", PubKey: clientPub, Trickle: clientTrickle})
+		_ = readMsg(t, daemon) // connect
+		_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeChallenge, Nonce: "DNONCE"})
+		ch := readMsg(t, client)
+		_ = client.WriteJSON(signal.Msg{
+			Type:      signal.TypeProof,
+			Sig:       signal.Sign(clientPriv, []byte(ch.Nonce)),
+			BrokerSig: signal.Sign(clientPriv, []byte(ch.BrokerNonce)),
+		})
+		cIce, dIce := readMsg(t, client), readMsg(t, daemon)
+		if cIce.Type != signal.TypeICEServers || dIce.Type != signal.TypeICEServers {
+			t.Fatalf("want iceServers on both sides, got %+v / %+v", cIce, dIce)
+		}
+		if cIce.Trickle != dIce.Trickle {
+			t.Fatalf("peers disagree on trickle: client %v, daemon %v", cIce.Trickle, dIce.Trickle)
+		}
+		_ = readMsg(t, daemon) // relayed proof
+		return daemon, client, cIce.Trickle
+	}
+
+	// Either side silent (an old daemon, an old client) → no trickle.
+	for _, tc := range []struct{ daemon, client bool }{{false, false}, {true, false}, {false, true}} {
+		if _, _, verdict := handshake(tc.daemon, tc.client); verdict {
+			t.Fatalf("daemon=%v client=%v: want no trickle", tc.daemon, tc.client)
+		}
+	}
+
+	daemon, client, verdict := handshake(true, true)
+	if !verdict {
+		t.Fatal("both peers declared trickle, want verdict true")
+	}
+
+	// client → daemon, including the empty end-of-candidates message.
+	idx := uint16(0)
+	_ = client.WriteJSON(signal.Msg{Type: signal.TypeCandidate, Candidate: "candidate:1 1 udp 1 10.0.0.1 5000 typ host",
+		SDPMid: "0", SDPMLineIndex: &idx})
+	got := readMsg(t, daemon)
+	if got.Type != signal.TypeCandidate || got.Candidate == "" || got.SDPMid != "0" ||
+		got.SDPMLineIndex == nil || *got.SDPMLineIndex != 0 {
+		t.Fatalf("daemon got %+v", got)
+	}
+	_ = client.WriteJSON(signal.Msg{Type: signal.TypeCandidate})
+	if got := readMsg(t, daemon); got.Type != signal.TypeCandidate || got.Candidate != "" {
+		t.Fatalf("daemon want end-of-candidates, got %+v", got)
+	}
+
+	// daemon → client.
+	_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeCandidate, Candidate: "candidate:2 1 udp 1 10.0.0.2 5000 typ host"})
+	if got := readMsg(t, client); got.Type != signal.TypeCandidate || got.Candidate == "" {
+		t.Fatalf("client got %+v", got)
+	}
+}

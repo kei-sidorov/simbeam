@@ -59,17 +59,19 @@ func (c *conn) send(m signal.Msg) error {
 
 // daemonConn is a registered daemon plus its current (single) client session.
 type daemonConn struct {
-	c      *conn
-	id     string
-	mu     sync.Mutex
-	client *clientConn
+	c       *conn
+	id      string
+	trickle bool // declared on register
+	mu      sync.Mutex
+	client  *clientConn
 }
 
 // clientConn is the in-flight client for a daemon, with the broker's gate nonce.
 type clientConn struct {
-	c      *conn
-	pubKey string
-	bNonce string
+	c       *conn
+	pubKey  string
+	bNonce  string
+	trickle bool // declared on join
 }
 
 // New builds a Broker with sane defaults for the optional Config fields.
@@ -172,7 +174,7 @@ func (b *Broker) serveDaemon(c *conn, reg signal.Msg) {
 		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "register missing daemon id"})
 		return
 	}
-	d := &daemonConn{c: c, id: id}
+	d := &daemonConn{c: c, id: id, trickle: reg.Trickle}
 	b.mu.Lock()
 	b.daemons[id] = d // a re-register (after reconnect) overwrites the stale slot
 	b.mu.Unlock()
@@ -216,7 +218,7 @@ func (b *Broker) serveDaemon(c *conn, reg signal.Msg) {
 		case signal.TypeChallenge:
 			// Attach the broker's own gate nonce before forwarding to the client.
 			_ = cl.c.send(signal.Msg{Type: signal.TypeChallenge, Nonce: m.Nonce, BrokerNonce: cl.bNonce})
-		case signal.TypeAnswer, signal.TypeError, signal.TypePeerLeft:
+		case signal.TypeAnswer, signal.TypeCandidate, signal.TypeError, signal.TypePeerLeft:
 			_ = cl.c.send(m)
 		}
 	}
@@ -248,7 +250,7 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "broker nonce error"})
 		return
 	}
-	cl := &clientConn{c: c, pubKey: join.PubKey, bNonce: bNonce}
+	cl := &clientConn{c: c, pubKey: join.PubKey, bNonce: bNonce, trickle: join.Trickle}
 	d.mu.Lock()
 	old := d.client
 	d.client = cl // one client at a time; a new client replaces the previous
@@ -306,12 +308,16 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 			}
 			b.n.proofsOK.Add(1)
 			ice := b.iceServers(cl.pubKey)
-			_ = c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
-			_ = d.c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
+			// Trickle only if both peers declared it; this message is the last
+			// thing both get before they build offer/answer, so it carries the
+			// verdict (the DataChannel caps handshake is far too late for it).
+			tr := d.trickle && cl.trickle
+			_ = c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice, Trickle: tr})
+			_ = d.c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice, Trickle: tr})
 			// Relay the peer proof to the daemon (brokerSig stripped — the daemon
 			// only cares about Sig over its own nonce + its pinned set).
 			_ = d.c.send(signal.Msg{Type: signal.TypeProof, Sig: m.Sig})
-		case signal.TypeOffer:
+		case signal.TypeOffer, signal.TypeCandidate:
 			_ = d.c.send(m)
 		}
 	}

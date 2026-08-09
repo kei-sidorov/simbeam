@@ -13,6 +13,7 @@ const (
 	TypeAnswer     = "answer"     // daemon → broker → client (carries Sig)
 	TypePeerLeft   = "peerLeft"   // broker → peer: the other side dropped
 	TypeError      = "error"      // broker/peer → peer: fatal, text in Msg
+	TypeCandidate  = "candidate"  // trickle ICE: relayed both ways, empty Candidate = end-of-candidates
 )
 
 // 3C handshake additions: a mutual challenge-response runs before offer/answer.
@@ -46,8 +47,14 @@ const (
 )
 
 // Msg is the single JSON envelope for every signaling message in both
-// directions; unused fields stay zero. Non-trickle ICE: all candidates ride
-// inside SDP, so there is no separate candidate message.
+// directions; unused fields stay zero.
+//
+// ICE is trickled only when BOTH peers ask for it: the daemon sets Trickle on
+// register, the client on join, and the broker ANDs them onto the iceServers
+// message both peers get right before they build offer/answer. Absent anywhere
+// in the chain (old broker, old daemon, old client) that reads as false and
+// everyone keeps the original behaviour — all candidates inside the SDP, no
+// candidate messages.
 type Msg struct {
 	Type        string          `json:"type"`
 	Room        string          `json:"room,omitempty"`        // register/join: the pairing token
@@ -65,6 +72,14 @@ type Msg struct {
 	BrokerSig   string          `json:"brokerSig,omitempty"`   // proof: client Ed25519 signature over BrokerNonce (verified+stripped by broker)
 	Daemons     []string        `json:"daemons,omitempty"`     // watch: daemonIDs to observe
 	States      map[string]bool `json:"states,omitempty"`      // presence: daemonID → online (snapshot or delta)
+
+	// Trickle ICE. The fields below mirror RTCIceCandidateInit /
+	// webrtc.ICECandidateInit so neither side has to translate. usernameFragment
+	// is omitted on purpose: it only matters for ICE restarts, which we don't do.
+	Trickle       bool    `json:"trickle,omitempty"`       // register/join: peer supports trickle; iceServers: broker's AND verdict
+	Candidate     string  `json:"candidate,omitempty"`     // candidate: the "candidate:..." line; empty = end-of-candidates
+	SDPMid        string  `json:"sdpMid,omitempty"`        // candidate: media stream identification
+	SDPMLineIndex *uint16 `json:"sdpMLineIndex,omitempty"` // candidate: pointer because 0 is a real value
 }
 
 // ICEServer is the subset of the WebRTC RTCIceServer JSON shape we transmit.

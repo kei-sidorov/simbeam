@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -98,5 +99,70 @@ func TestNewWithICEServersBuilds(t *testing.T) {
 	// test is fine — non-trickle gathering completes with host candidates).
 	if _, err := sess.Answer(makeOffer(t)); err != nil {
 		t.Fatalf("Answer with iceServers configured: %v", err)
+	}
+}
+
+// TestAnswerTrickle: with OnCandidate set, Answer returns without waiting for
+// gathering (the answer SDP carries no candidates) and the candidates arrive on
+// the callback instead, terminated by nil.
+func TestAnswerTrickle(t *testing.T) {
+	sess, err := New(nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	cands := make(chan *webrtc.ICECandidate, 32)
+	sess.OnCandidate(func(c *webrtc.ICECandidate) { cands <- c })
+
+	answerSDP, err := sess.Answer(makeOffer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(answerSDP, "a=candidate") {
+		t.Fatalf("trickle answer should not carry candidates:\n%s", answerSDP)
+	}
+	var got int
+	for {
+		select {
+		case c := <-cands:
+			if c == nil { // end-of-gathering
+				if got == 0 {
+					t.Fatal("gathering completed without a single candidate")
+				}
+				return
+			}
+			got++
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out after %d candidates, want end-of-gathering nil", got)
+		}
+	}
+}
+
+// TestAddCandidateBuffersUntilRemoteDescription: a candidate that overtakes the
+// offer must not be dropped (pion rejects it outright before the remote
+// description is set) — it is buffered and applied by Answer.
+func TestAddCandidateBuffersUntilRemoteDescription(t *testing.T) {
+	sess, err := New(nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	early := webrtc.ICECandidateInit{Candidate: "candidate:1 1 udp 2130706431 10.9.8.7 51000 typ host"}
+	if err := sess.AddCandidate(early); err != nil {
+		t.Fatalf("early candidate: %v", err)
+	}
+	if _, err := sess.Answer(makeOffer(t)); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, st := range sess.pc.GetStats() {
+		if cs, ok := st.(webrtc.ICECandidateStats); ok && cs.IP == "10.9.8.7" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("buffered candidate never reached the peer connection")
 	}
 }

@@ -382,9 +382,18 @@ function scheduleReconnect() {
 async function signal3C(s, gen) {
   sig = new WebSocket(s.signal);
   let offerSent = false;
+  // Trickle: candidates that overtake the signed answer wait here until the
+  // remote description exists (addIceCandidate throws before that).
+  let remoteSet = false, pendingCands = [];
+  const addCand = async (m) => {
+    try {
+      if (m.candidate) await pc.addIceCandidate({candidate: m.candidate, sdpMid: m.sdpMid, sdpMLineIndex: m.sdpMLineIndex});
+      else await pc.addIceCandidate(); // empty = end-of-candidates
+    } catch (e) { console.warn('addIceCandidate', e); }
+  };
 
   const sendJoin = async () => {
-    const join = {type: 'join', role: 'client', daemon: s.daemon, pubkey: clientPub};
+    const join = {type: 'join', role: 'client', daemon: s.daemon, pubkey: clientPub, trickle: true};
     if (s.pair) {
       const nonce = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
       join.nonce = nonce;
@@ -414,18 +423,36 @@ async function signal3C(s, gen) {
         pc.setConfiguration({iceServers: window._iceServers});
         if (!offerSent) {
           const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          await iceGatheringComplete(pc);
+          if (m.trickle) {
+            // Send the offer the moment it exists; candidates follow as they
+            // are gathered instead of holding the offer until TURN answers.
+            pc.onicecandidate = (ev) => {
+              if (gen !== startGen || !sig || sig.readyState !== WebSocket.OPEN) return;
+              const c = ev.candidate; // null = end of gathering
+              sig.send(JSON.stringify(c
+                ? {type: 'candidate', candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex}
+                : {type: 'candidate'}));
+            };
+            await pc.setLocalDescription(offer);
+          } else {
+            await pc.setLocalDescription(offer);
+            await iceGatheringComplete(pc);
+          }
           if (gen !== startGen) return;
           sig.send(JSON.stringify({type: 'offer', sdp: pc.localDescription.sdp}));
           offerSent = true;
         }
         break;
       }
+      case 'candidate':
+        if (remoteSet) await addCand(m); else pendingCands.push(m);
+        break;
       case 'answer': {
         const ok = await verifyAnswer(s.daemonPub, m.sdp, m.sig);
         if (!ok) { showAuthFail(); teardown(); return; }
         await pc.setRemoteDescription({type: 'answer', sdp: m.sdp});
+        remoteSet = true;
+        for (const c of pendingCands.splice(0)) await addCand(c);
         minimizeBuffer(pc);
         if (s.save) {
           saveMac({signal: s.signal, daemon: s.daemon, daemonPub: s.daemonPub, name: s.name || 'Mac'});
