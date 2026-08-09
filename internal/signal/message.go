@@ -42,6 +42,7 @@ const (
 const (
 	CodeOffline     = "offline"      // join: the target daemon is not registered
 	CodeBusy        = "busy"         // join: another client already holds this daemon's single session
+	CodeTakenOver   = "taken_over"   // sent to the sitting client when a join with takeover evicts it
 	CodePairExpired = "pair_expired" // connect: the enrollment window expired or was cancelled
 	CodePairUsed    = "pair_used"    // connect: the enrollment window was already consumed
 	CodePairInvalid = "pair_invalid" // connect: no window armed, or the pairing secret did not match
@@ -70,6 +71,7 @@ type Msg struct {
 	Nonce       string          `json:"nonce,omitempty"`       // join: client nonce binding the enroll proof; challenge: daemon nonce to sign
 	BrokerNonce string          `json:"brokerNonce,omitempty"` // challenge: broker nonce the client signs so the broker can gate TURN
 	Pair        string          `json:"pair,omitempty"`        // join: HMAC-SHA256(S, clientPubKey‖0x00‖nonce) enrollment proof
+	Takeover    bool            `json:"takeover,omitempty"`    // join: evict the sitting client instead of getting CodeBusy (user confirmed)
 	BrokerSig   string          `json:"brokerSig,omitempty"`   // proof: client Ed25519 signature over BrokerNonce (verified+stripped by broker)
 	Daemons     []string        `json:"daemons,omitempty"`     // watch: daemonIDs to observe
 	States      map[string]bool `json:"states,omitempty"`      // presence: daemonID → online (snapshot or delta)

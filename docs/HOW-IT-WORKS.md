@@ -600,7 +600,8 @@ control codes:
 | `code` | Sent by | Meaning |
 |--------|---------|---------|
 | `offline`      | broker | The target Mac's daemon is not currently registered. Wake the Mac and retry. |
-| `busy`         | broker | Another client holds this Mac's single session. Close that session, then retry — do not auto-retry in a loop. |
+| `busy`         | broker | Another client holds this Mac's single session. Ask the user, then either stop or rejoin with `"takeover":true` — never auto-retry in a loop. |
+| `taken_over`   | broker | Your session was ended by another device joining with `takeover`; the socket closes right after. |
 | `pair_expired` | daemon | The pairing window expired (TTL passed) or was cancelled. Generate a fresh QR. |
 | `pair_used`    | daemon | The one-time pairing secret was already consumed by a successful pairing. Generate a fresh QR. |
 | `pair_invalid` | daemon | No pairing window is open, or the enrollment proof didn't match. |
@@ -611,7 +612,8 @@ control codes:
 `pair_*` codes accompany a rejected `join`/`connect` during pairing; `offline` comes back when you
 `join` a Mac that isn't online, `busy` when someone else is already on it. A `join` carrying the key
 that already holds the session is a reconnect, not a second viewer: it takes the slot over and never
-gets `busy`. Lifecycle failures also carry `operation` (which request failed) and
+gets `busy`. A `busy` refusal never reaches the daemon, so a pairing secret sent with it stays
+unspent — the confirmed retry can reuse it verbatim plus `"takeover":true`. Lifecycle failures also carry `operation` (which request failed) and
 `udid` (which device). An `error` with no `code` is a generic failure — surface its `msg`.
 
 ---

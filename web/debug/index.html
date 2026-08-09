@@ -396,6 +396,7 @@ async function signal3C(s, gen) {
 
   const sendJoin = async () => {
     const join = {type: 'join', role: 'client', daemon: s.daemon, pubkey: clientPub, trickle: true};
+    if (s.takeover) join.takeover = true; // user confirmed evicting the sitting client
     if (s.pair) {
       const nonce = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
       join.nonce = nonce;
@@ -475,10 +476,16 @@ async function signal3C(s, gen) {
         break;
       }
       case 'error':
-        // busy: another device holds the Mac's single session — say so and stop
-        // retrying (teardown kills the reconnect), otherwise we'd join the very
-        // displacement fight this code exists to prevent.
-        if (m.code === 'busy') { alert(m.msg); teardown(); }
+        // busy: another device holds the Mac's single session. Stop (teardown
+        // kills the reconnect) unless the user asks to evict it — auto-retrying
+        // would recreate the displacement fight this code exists to prevent.
+        // The busy refusal never reached the daemon, so s.pair is still unspent.
+        if (m.code === 'busy') {
+          const s = currentSession;
+          teardown();
+          if (confirm(m.msg + '\n\nEnd that session and connect here?')) startRemoteSession({...s, takeover: true});
+        }
+        else if (m.code === 'taken_over') { alert(m.msg); teardown(); }
         else if (String(m.msg).includes('offline')) { scheduleReconnect(); }
         else { alert('pairing error: ' + m.msg); teardown(); }
         break;

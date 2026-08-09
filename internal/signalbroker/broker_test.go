@@ -251,6 +251,25 @@ func TestSecondClientKeyGetsBusy(t *testing.T) {
 	if got := b.Stats().BusyTotal; got != 1 {
 		t.Fatalf("busy total = %d, want 1", got)
 	}
+
+	// Same join with takeover set (the user confirmed): A is told why, then
+	// dropped, and the daemon starts handshaking B.
+	third := dial(t, url)
+	_ = third.WriteJSON(signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: "D", PubKey: pubB, Takeover: true})
+	if m := readMsg(t, a); m.Type != signal.TypeError || m.Code != signal.CodeTakenOver {
+		t.Fatalf("client A want taken_over notice, got %+v", m)
+	}
+	_ = a.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, rerr := a.ReadMessage(); rerr == nil {
+		t.Fatalf("evicted client A should have been disconnected, but read succeeded")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if readMsg(t, daemon).Type == signal.TypeConnect {
+			return // B's handshake started
+		}
+	}
+	t.Fatalf("daemon never received connect for the takeover client")
 }
 
 // TestSecondClientDisplacesFirst verifies the one-client-at-a-time takeover is

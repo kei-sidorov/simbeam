@@ -257,8 +257,15 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 	// (reconnect after a blip) and takes over its own slot; a DIFFERENT key is a
 	// second viewer and is told so instead of silently killing the live session —
 	// two auto-reconnecting clients used to displace each other about once a
-	// second and neither ever saw video.
-	if old != nil && old.pubKey != cl.pubKey {
+	// second and neither ever saw video. Takeover is that second viewer coming
+	// back after the user confirmed the eviction.
+	//
+	// ponytail: takeover is honoured before the daemon authenticates the joiner,
+	// so anyone who knows the daemonID can end a session (they still see nothing
+	// — pinning and DTLS are the daemon's). That is the pre-busy status quo for
+	// every join; if it ever needs closing, the daemon must arbitrate: relay the
+	// request, keep the sitting client until the newcomer clears the key gate.
+	if old != nil && old.pubKey != cl.pubKey && !join.Takeover {
 		d.mu.Unlock()
 		b.n.busy.Add(1)
 		_ = c.send(signal.Msg{Type: signal.TypeError, Code: signal.CodeBusy,
@@ -268,6 +275,14 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 	d.client = cl
 	d.mu.Unlock()
 	if old != nil {
+		// Name the killer before pulling the socket: an evicted client that only
+		// sees its WS die reports it as a network fault. (Same key = that device
+		// reconnecting to itself; there is nobody on the old socket to tell.)
+		if old.pubKey != cl.pubKey {
+			b.n.takeovers.Add(1)
+			_ = old.c.send(signal.Msg{Type: signal.TypeError, Code: signal.CodeTakenOver,
+				Msg: "another device took over this Mac"})
+		}
 		// Stop the displaced client's goroutine so it can't write its
 		// proof/offer into this new client's session on the shared daemon conn.
 		_ = old.c.ws.Close()
