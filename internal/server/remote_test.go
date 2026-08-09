@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/webrtc/v4"
+
 	"github.com/kei-sidorov/simbeam/internal/signal"
 )
 
@@ -75,6 +77,30 @@ func TestToWebRTCConvertsICEServers(t *testing.T) {
 	if out[0].URLs[0] != "stun:s:3478" {
 		t.Fatalf("urls not carried: %+v", out[0])
 	}
+}
+
+// TestCloudflareICEServerAccepted: pion must swallow the exact entry Cloudflare
+// Realtime TURN returns — six URLs in ONE entry, every one carrying a
+// ?transport= query. If pion ever rejects that shape, NewPeerConnection fails
+// and every subscriber's session dies, so pin it here rather than find out in
+// prod.
+func TestCloudflareICEServerAccepted(t *testing.T) {
+	in := []signal.ICEServer{{
+		URLs: []string{
+			"turn:turn.cloudflare.com:3478?transport=udp",
+			"turn:turn.cloudflare.com:53?transport=udp",
+			"turn:turn.cloudflare.com:3478?transport=tcp",
+			"turn:turn.cloudflare.com:80?transport=tcp",
+			"turns:turn.cloudflare.com:5349?transport=tcp",
+			"turns:turn.cloudflare.com:443?transport=tcp",
+		},
+		Username: "u", Credential: "p",
+	}}
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: toWebRTC(in)})
+	if err != nil {
+		t.Fatalf("pion rejected Cloudflare's iceServers entry: %v", err)
+	}
+	_ = pc.Close()
 }
 
 func TestSignedAnswerVerifies(t *testing.T) {
