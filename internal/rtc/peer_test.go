@@ -48,6 +48,12 @@ func TestSessionAnswer(t *testing.T) {
 	if !strings.Contains(answerSDP, "m=video") {
 		t.Fatalf("answer missing video media section:\n%s", answerSDP)
 	}
+	// Without OnCandidate the answer must still carry the candidates inline —
+	// this is what an old client depends on, and the only thing that fails if
+	// trickle ever leaks into the default path.
+	if !strings.Contains(answerSDP, "a=candidate") {
+		t.Fatalf("non-trickle answer must carry its candidates:\n%s", answerSDP)
+	}
 }
 
 func TestSessionWriteFrameNoPanic(t *testing.T) {

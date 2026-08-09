@@ -172,13 +172,19 @@ func (s *Session) OnCandidate(fn func(*webrtc.ICECandidate)) {
 	s.mu.Unlock()
 }
 
+// maxPendingCands bounds the pre-remote-description buffer: a real peer trickles
+// a handful, and the source is a signaling connection we do not trust.
+const maxPendingCands = 64
+
 // AddCandidate applies one trickled remote candidate (empty Candidate =
 // end-of-candidates). Candidates that arrive before the offer is applied are
 // buffered, because pion rejects them until the remote description is set.
 func (s *Session) AddCandidate(c webrtc.ICECandidateInit) error {
 	s.mu.Lock()
 	if !s.remoteSet {
-		s.pending = append(s.pending, c)
+		if len(s.pending) < maxPendingCands {
+			s.pending = append(s.pending, c)
+		}
 		s.mu.Unlock()
 		return nil
 	}
