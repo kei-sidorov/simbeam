@@ -20,6 +20,14 @@ const (
 	// lossy "control" one. Unlike the other two this describes the dispatcher,
 	// not the backend, so every backend advertises it.
 	CapLifecycle = "lifecycle"
+	// CapTrickle says this daemon speaks trickle ICE. It does NOT gate anything:
+	// the hello rides the DataChannel, which only exists once the connection
+	// trickle is meant to speed up is already established, so the real
+	// negotiation happens during signalling (register/join → the broker's AND on
+	// iceServers, decision #117). It is here for diagnosis — a client that asked
+	// for trickle and got a false verdict can tell an old broker (daemon says
+	// "trickle") from an old daemon (it does not).
+	CapTrickle = "trickle"
 )
 
 // Operation values in a lifecycle error reply: which request failed. A client
