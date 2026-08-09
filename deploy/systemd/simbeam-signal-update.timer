@@ -2,8 +2,16 @@
 Description=Periodically check for a new simbeam-signal release
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=10min
+# Wall-clock, NOT monotonic. The previous OnBootSec=2min + OnUnitActiveSec=10min
+# pair had a trap: OnBootSec fires once per boot and OnUnitActiveSec only arms
+# from the service's last activation, so stopping the timer (which the runbook
+# tells you to do for a release that changes broker flags) and starting it again
+# left it "active" with NextElapse=infinity — dormant forever, silently. Seen on
+# 2026-08-09: no update check ran for eight hours. OnCalendar always has a next
+# elapse no matter how the timer was started, and Persistent= actually applies to
+# it (it is ignored for monotonic timers), so a tick missed while the server was
+# down is caught up at boot.
+OnCalendar=*:0/10
 Persistent=true
 
 [Install]
