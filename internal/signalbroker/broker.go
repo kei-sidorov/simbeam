@@ -41,6 +41,7 @@ type Broker struct {
 	mu       sync.Mutex
 	daemons  map[string]*daemonConn // daemonID → registered daemon
 	watchers map[*watcher]struct{}  // presence subscribers (guarded by mu, same as daemons)
+	n        counters               // aggregate activity totals (stats.go); atomic, no mu
 }
 
 // conn serializes writes to one websocket (gorilla forbids concurrent writers).
@@ -116,6 +117,7 @@ func (b *Broker) iceServers(clientPubKey string) []signal.ICEServer {
 		}
 	}
 	if granted {
+		b.n.turnGranted.Add(1)
 		cred := signal.MakeTURNCredential(b.cfg.TURNSecret, clientPubKey, b.cfg.Now(), b.cfg.TURNTTL)
 		out = append(out, signal.ICEServer{URLs: b.cfg.TURNURLs, Username: cred.Username, Credential: cred.Credential})
 	}
@@ -210,10 +212,17 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 		_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "join missing daemon or pubkey"})
 		return
 	}
+	b.n.joins.Add(1)
+	if join.Pair != "" {
+		// The broker only relays Pair; the daemon decides whether it is valid.
+		// So this counts pairing ATTEMPTS, never confirmed enrollments.
+		b.n.pairings.Add(1)
+	}
 	b.mu.Lock()
 	d := b.daemons[join.Daemon]
 	b.mu.Unlock()
 	if d == nil {
+		b.n.offline.Add(1)
 		_ = c.send(signal.Msg{Type: signal.TypeError, Code: signal.CodeOffline, Msg: "device offline — wake your Mac"})
 		return
 	}
@@ -275,9 +284,11 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 			// Verify the broker-gate signature over bNonce: authenticates the
 			// client KEY so the TURN gate can trust the subscription lookup.
 			if !signal.Verify(cl.pubKey, []byte(cl.bNonce), m.BrokerSig) {
+				b.n.proofsBad.Add(1)
 				_ = c.send(signal.Msg{Type: signal.TypeError, Msg: "broker challenge failed"})
 				return
 			}
+			b.n.proofsOK.Add(1)
 			ice := b.iceServers(cl.pubKey)
 			_ = c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})
 			_ = d.c.send(signal.Msg{Type: signal.TypeICEServers, ICEServers: ice})

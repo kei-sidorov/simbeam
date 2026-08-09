@@ -30,6 +30,7 @@ func main() {
 	turnTTL := flag.Duration("turn-ttl", time.Minute, "ephemeral TURN credential lifetime")
 	turnOpen := flag.Bool("turn-open", false, "grant TURN to ALL authenticated clients, bypassing the subscription gate (temporary — use while there are no subscriptions)")
 	db := flag.String("db", "simbeam.db", "SQLite path for the subscriptions store")
+	statsAddr := flag.String("stats-addr", "", "if set, serve aggregate JSON stats at http://<addr>/stats — bind loopback only, it is NOT behind the reverse proxy's auth")
 	flag.Parse()
 
 	if *versionFlag {
@@ -61,6 +62,19 @@ func main() {
 		AppSecret:  appSecret,
 		TURNOpen:   *turnOpen,
 	})
+
+	// Stats live on their own listener so the public reverse proxy (which
+	// forwards everything on the main mux) can never reach them.
+	if *statsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/stats", b.StatsHandler())
+		go func() {
+			if err := http.ListenAndServe(*statsAddr, mux); err != nil {
+				fmt.Fprintln(os.Stderr, "stats listener:", err)
+			}
+		}()
+		fmt.Printf("simbeam-signal stats on http://%s/stats\n", *statsAddr)
+	}
 
 	fmt.Printf("simbeam-signal listening on %s (ws: /ws, api: /v1/subscription, db: %s)\n", *addr, *db)
 	if err := http.ListenAndServe(*addr, b.Handler()); err != nil {
