@@ -24,19 +24,20 @@ import (
 
 // Config tunes ICE issuance, the subscription gate, and the subscription API.
 type Config struct {
-	STUNURLs   []string      // always handed out
-	TURNURLs   []string      // handed out only when the client's subscription is active
-	TURNSecret string        // coturn static-auth-secret (shared with coturn)
-	TURNTTL    time.Duration // ephemeral credential lifetime; 0 → 1 minute
-	Store      store.Store   // subscription gate + /v1/subscription persistence; nil → no TURN, API 503
-	AppSecret  string        // SIMCAST_APP_SECRET: the weak app-sig barrier on the subscription API
-	TURNOpen   bool          // TEMP: hand TURN to every authenticated client, bypassing the subscription gate (use while there are no subscriptions yet)
-	Now        func() time.Time
+	STUNURLs     []string      // always handed out
+	TURNEndpoint string        // Cloudflare Realtime TURN credential URL (see CloudflareTURNEndpoint); "" → no TURN
+	TURNAPIToken string        // Cloudflare TURN key API token
+	TURNTTL      time.Duration // credential lifetime asked of Cloudflare; 0 → 24 hours
+	Store        store.Store   // subscription gate + /v1/subscription persistence; nil → no TURN, API 503
+	AppSecret    string        // SIMCAST_APP_SECRET: the weak app-sig barrier on the subscription API
+	TURNOpen     bool          // TEMP: hand TURN to every authenticated client, bypassing the subscription gate (use while there are no subscriptions yet)
+	Now          func() time.Time
 }
 
 // Broker holds live daemon presence.
 type Broker struct {
 	cfg      Config
+	turn     *turnFetcher // nil when no TURN is configured
 	up       websocket.Upgrader
 	mu       sync.Mutex
 	daemons  map[string]*daemonConn // daemonID → registered daemon
@@ -74,17 +75,27 @@ type clientConn struct {
 // New builds a Broker with sane defaults for the optional Config fields.
 func New(cfg Config) *Broker {
 	if cfg.TURNTTL == 0 {
-		cfg.TURNTTL = time.Minute
+		cfg.TURNTTL = 24 * time.Hour
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Broker{
+	b := &Broker{
 		cfg:      cfg,
 		up:       websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
 		daemons:  map[string]*daemonConn{},
 		watchers: map[*watcher]struct{}{},
 	}
+	if cfg.TURNEndpoint != "" {
+		b.turn = &turnFetcher{
+			endpoint: cfg.TURNEndpoint,
+			token:    cfg.TURNAPIToken,
+			ttl:      cfg.TURNTTL,
+			now:      cfg.Now,
+			http:     &http.Client{Timeout: 10 * time.Second},
+		}
+	}
+	return b
 }
 
 // Handler serves the broker WS at /ws and the subscription API at /v1/...
@@ -97,12 +108,13 @@ func (b *Broker) Handler() http.Handler {
 }
 
 // iceServers builds the config for an authenticated client: STUN always, TURN
-// only when the client's subscription is active in Store. The TURN credential
-// userID is the verified client pubkey (decouples it from any room/token).
+// only when the client's subscription is active in Store. The relay entry comes
+// from Cloudflare (cfturn.go); if that fetch fails the client gets STUN only,
+// same as a free client — degraded, not broken.
 func (b *Broker) iceServers(clientPubKey string) []signal.ICEServer {
 	out := []signal.ICEServer{{URLs: b.cfg.STUNURLs}}
 	granted := false
-	if len(b.cfg.TURNURLs) > 0 {
+	if b.turn != nil {
 		switch {
 		case b.cfg.TURNOpen:
 			// Subscription gate disabled: hand TURN to every authenticated client.
@@ -117,9 +129,13 @@ func (b *Broker) iceServers(clientPubKey string) []signal.ICEServer {
 		}
 	}
 	if granted {
+		relay, err := b.turn.get(context.Background())
+		if err != nil {
+			log.Printf("signalbroker: cloudflare turn credential failed: %v", err)
+			return out
+		}
 		b.n.turnGranted.Add(1)
-		cred := signal.MakeTURNCredential(b.cfg.TURNSecret, clientPubKey, b.cfg.Now(), b.cfg.TURNTTL)
-		out = append(out, signal.ICEServer{URLs: b.cfg.TURNURLs, Username: cred.Username, Credential: cred.Credential})
+		out = append(out, relay)
 	}
 	return out
 }

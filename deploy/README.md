@@ -1,13 +1,15 @@
 # Deploying the simbeam signalling server (Phase 4)
 
-A single VPS runs the signalling broker (`simbeam-signal`) + coturn (TURN relay)
-behind Caddy (automatic HTTPS). The broker auto-updates itself from GitHub Releases
-via a systemd timer — no CI access to the server, no secrets in the repo.
+A single VPS runs the signalling broker (`simbeam-signal`) behind Caddy (automatic
+HTTPS). The TURN relay is Cloudflare Realtime TURN — managed, anycast, nothing to
+run on the VPS. The broker auto-updates itself from GitHub Releases via a systemd
+timer — no CI access to the server, no secrets in the repo.
 
 ## Prerequisites
 
 - A Linux VPS (amd64) and a domain pointing at it (A record for `signal.<domain>`).
-- Ports: 443 (Caddy), 3478 + the coturn relay UDP range (TURN).
+- Port 443 (Caddy). No relay ports — the relay is not on this host.
+- A Cloudflare account with a Realtime TURN key (dashboard → Realtime → TURN Keys).
 
 ## One-time setup
 
@@ -17,18 +19,17 @@ git clone https://github.com/kei-sidorov/simbeam && cd simbeam
 sudo ./deploy/bootstrap.sh
 ```
 
-`bootstrap.sh` installs coturn, lays down the systemd units + updater, creates the
-`simbeam` user and `/etc/simbeam/signal.env` from the template, pulls the first
-binary, and enables the broker + auto-update timer.
+`bootstrap.sh` lays down the systemd units + updater, creates the `simbeam` user and
+`/etc/simbeam/signal.env` from the template, pulls the first binary, and enables the
+broker + auto-update timer.
 
 ## Configure
 
-1. **`/etc/simbeam/signal.env`** (chmod 600): set `SIMCAST_APP_SECRET` (must match the
-   value your client/app signs subscription POSTs with) and the `--turn-secret` /
-   domain inside `SIMCAST_SIGNAL_ARGS`. Then `systemctl restart simbeam-signal`.
-2. **coturn** (`/etc/turnserver.conf`): set `static-auth-secret` **equal to** the
-   broker's `--turn-secret`, set `external-ip` and `realm`, then
-   `systemctl enable --now coturn`.
+1. **Cloudflare TURN key**: dashboard → Realtime → TURN Keys → create. Keep the key
+   ID and the API token (the token is displayed once).
+2. **`/etc/simbeam/signal.env`** (chmod 600): set `SIMCAST_APP_SECRET` (must match the
+   value your client/app signs subscription POSTs with), `SIMBEAM_TURN_API_TOKEN`, and
+   `--turn-key-id` inside `SIMCAST_SIGNAL_ARGS`. Then `systemctl restart simbeam-signal`.
 3. **Caddy**: install Caddy, put `deploy/Caddyfile` at `/etc/caddy/Caddyfile` with your
    domain, then `systemctl reload caddy`. Pairing URLs now use `wss://signal.<domain>/ws`.
 
@@ -90,8 +91,8 @@ ufw allow 32768:60999/udp comment 'pion ICE host candidates (demo daemon)'
 # verify the OS range matches: sysctl net.ipv4.ip_local_port_range
 ```
 
-(The broker/coturn rules — `443/tcp`, `3478,5349/tcp,udp`, `49152:65535/udp`
-relay — are separate and already needed for TURN.) A tighter alternative to the
+(The broker rule — `443/tcp` — is separate. TURN needs no inbound rules at all:
+the relay is Cloudflare's, not this host's.) A tighter alternative to the
 wide range is to pin pion to a small dedicated range in code and open only that;
 not yet done — see the roadmap.
 
@@ -100,8 +101,14 @@ not yet done — see the roadmap.
 | Entry | When | Cost |
 |-------|------|------|
 | `stun:` | always | ~free (stateless) |
-| `turn:` + ephemeral HMAC creds | only when the client's subscription is active | relays media — the metered resource |
+| `turn:`/`turns:` on `turn.cloudflare.com` | only when the client's subscription is active | relays media — the metered resource ($0.05/GB after 1000 GB/mo free) |
 
 The TURN gate reads the subscription store keyed by the challenge-verified client key
 (Phase 3C, decision #63). Free tier (STUN only) works on the same LAN and friendly
 NATs; a hostile NAT yields `connectionState === "failed"` and the client shows the upsell.
+
+The broker holds **one** Cloudflare credential shared by all active subscribers,
+refetched at half its `--turn-ttl` (default 24h — Cloudflare drops an allocation once
+its credential expires, so the TTL has to outlive a streaming session; their max is
+48h). If Cloudflare's API is down, subscribers degrade to STUN only rather than
+failing the handshake — check `journalctl -u simbeam-signal | grep 'turn credential'`.

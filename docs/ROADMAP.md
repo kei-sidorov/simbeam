@@ -75,7 +75,7 @@ go run ./cmd/simbeamd list
 - **Pairing:** `pairingToken` + `daemonPubKey` (в браузере — через URL; QR — для нативного
   клиента позже). Pubkey аутентифицирует рукопожатие (анти-MITM).
 - **STUN/TURN gating:** STUN всем; TURN только «подписчикам» (в этой фазе — стаб проверки);
-  free при `iceConnectionState=failed` → апселл. TURN-движок — готовый `coturn`, свой не пишем.
+  free при `iceConnectionState=failed` → апселл. TURN — managed Cloudflare Realtime TURN, свой не держим.
 - **Валидация — в браузере** (расширение Phase 2 `/rtc`-клиента). Нативный клиент НЕ нужен.
 
 **DoD:** в браузере через интернет (или эмуляцию сети) — пейринг по токену, список симуляторов
@@ -102,7 +102,7 @@ Homebrew-дистрибуцию, Postgres (через `Store`).
   `simbeamd`, зависимости `idb-companion` + `ffmpeg`. Обновление — `brew upgrade`.
   _(Обновлено decision #105: Mac-путь переведён на свой `simbeam-control`; каск
   теперь зависит от `kei-sidorov/simbeam/simbeam-control`, без idb/ffmpeg.)_
-- **Self-host сервера**: VPS + systemd, брокер + coturn за Caddy (авто-TLS).
+- **Self-host сервера**: VPS + systemd, брокер за Caddy (авто-TLS); TURN — Cloudflare.
   **Pull-автообновление**: systemd timer тянет новый релиз из GitHub Releases,
   проверяет checksum, атомарно подменяет бинарь, рестартит юнит. Ноль серверных
   секретов в репо/CI; deploy-скаффолдинг генерик, секреты — на сервере.

@@ -617,21 +617,28 @@ What this means in practice:
 - **Active subscription:** the broker additionally hands you **short-lived TURN credentials** in the
   `iceServers` message, so the relay fallback is available.
 
-The TURN credentials the broker issues look like this inside `iceServers`:
+The relay is **Cloudflare Realtime TURN** — a managed anycast service, so there's no relay host to
+run or firewall. The entry the broker issues inside `iceServers` is what Cloudflare mints:
 
 ```json
 {
-  "urls": ["turn:relay.example:3478"],
-  "username": "<unix-expiry>:<clientPubKey>",
-  "credential": "<base64( HMAC-SHA1( turnSecret, username ) )>"
+  "urls": [
+    "turn:turn.cloudflare.com:3478?transport=udp",
+    "turns:turn.cloudflare.com:443?transport=tcp"
+  ],
+  "username": "<opaque>",
+  "credential": "<opaque>"
 }
 ```
 
-They're ephemeral (default ~1 minute TTL) and computed from a secret shared between the broker and
-the TURN server (`coturn`), so no per-credential state is stored anywhere.
+Unlike coturn's REST-API mechanism there's no shared secret to HMAC locally: credentials only come
+from Cloudflare's API, so the broker fetches one with its TURN key and reuses it for every active
+subscriber until it's halfway to expiry (default TTL 24h — Cloudflare tears down an allocation once
+its credential lapses, so the TTL has to outlive a session). `turns:...:443` is the entry that gets
+through corporate and hotel networks.
 
-When you self-host, **you decide the policy** — point the broker at your own `coturn` and your own
-subscription store, or skip TURN entirely and run STUN-only.
+When you self-host, **you decide the policy** — bring your own Cloudflare TURN key and subscription
+store, or skip TURN entirely and run STUN-only.
 
 ### The subscription API
 

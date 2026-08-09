@@ -2,6 +2,8 @@ package signalbroker
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -26,6 +28,23 @@ func dial(t *testing.T, url string) *websocket.Conn {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+// fakeTURNAPI stands in for Cloudflare's credential endpoint, answering with the
+// documented shape (a STUN entry the broker must ignore + the relay entry).
+func fakeTURNAPI(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer TOKEN" {
+			t.Errorf("turn api auth = %q, want Bearer TOKEN", got)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"iceServers":[
+			{"urls":["stun:stun.cloudflare.com:3478"]},
+			{"urls":["turns:turn.cloudflare.com:443?transport=tcp"],"username":"U","credential":"C"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 func readMsg(t *testing.T, c *websocket.Conn) signal.Msg {
@@ -67,11 +86,11 @@ func TestHandshakeRelayAndGate(t *testing.T) {
 	defer st.Close()
 
 	b := New(Config{
-		STUNURLs:   []string{"stun:x"},
-		TURNURLs:   []string{"turn:relay"},
-		TURNSecret: "secret",
-		Store:      st,
-		Now:        func() time.Time { return now },
+		STUNURLs:     []string{"stun:x"},
+		TURNEndpoint: fakeTURNAPI(t),
+		TURNAPIToken: "TOKEN",
+		Store:        st,
+		Now:          func() time.Time { return now },
 	})
 	srv := httptest.NewServer(b.Handler())
 	defer srv.Close()
@@ -152,10 +171,10 @@ func TestHandshakeRelayAndGate(t *testing.T) {
 func TestICEServers_TURNOpenBypassesGate(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	cfg := Config{
-		STUNURLs:   []string{"stun:x"},
-		TURNURLs:   []string{"turn:relay"},
-		TURNSecret: "secret",
-		Now:        func() time.Time { return now },
+		STUNURLs:     []string{"stun:x"},
+		TURNEndpoint: fakeTURNAPI(t),
+		TURNAPIToken: "TOKEN",
+		Now:          func() time.Time { return now },
 	}
 
 	// Gate on, no store/subscription → STUN only.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -525,11 +527,18 @@ func TestTurnGateBySubscription(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	// Stand-in for Cloudflare's credential endpoint (see internal/signalbroker/cfturn.go).
+	turnAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"iceServers":[{"urls":["turn:relay.example:3478"],"username":"U","credential":"C"}]}`)
+	}))
+	t.Cleanup(turnAPI.Close)
+
 	wsURL := brokerFixture(t, signalbroker.Config{
-		STUNURLs:   []string{"stun:stun.l.google.com:19302"},
-		TURNURLs:   []string{"turn:relay.example:3478"},
-		TURNSecret: "secret",
-		Store:      st,
+		STUNURLs:     []string{"stun:stun.l.google.com:19302"},
+		TURNEndpoint: turnAPI.URL,
+		TURNAPIToken: "TOKEN",
+		Store:        st,
 	})
 
 	pub, priv, _ := signal.GenerateKeyPair()

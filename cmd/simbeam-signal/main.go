@@ -25,9 +25,8 @@ func main() {
 	versionFlag := flag.Bool("version", false, "print version and exit")
 	addr := flag.String("addr", ":9000", "listen address")
 	stun := flag.String("stun", "stun:stun.l.google.com:19302", "comma-separated STUN URLs (handed to everyone)")
-	turn := flag.String("turn", "", "comma-separated TURN URLs (handed only to active subscribers)")
-	turnSecret := flag.String("turn-secret", "", "coturn static-auth-secret for ephemeral credentials")
-	turnTTL := flag.Duration("turn-ttl", time.Minute, "ephemeral TURN credential lifetime")
+	turnKeyID := flag.String("turn-key-id", "", "Cloudflare Realtime TURN key ID (relay handed only to active subscribers); the key's API token comes from SIMBEAM_TURN_API_TOKEN")
+	turnTTL := flag.Duration("turn-ttl", 24*time.Hour, "TURN credential lifetime requested from Cloudflare (max 48h); must outlive a streaming session")
 	turnOpen := flag.Bool("turn-open", false, "grant TURN to ALL authenticated clients, bypassing the subscription gate (temporary — use while there are no subscriptions)")
 	db := flag.String("db", "simbeam.db", "SQLite path for the subscriptions store")
 	statsAddr := flag.String("stats-addr", "", "if set, serve aggregate JSON stats at http://<addr>/stats — bind loopback only, it is NOT behind the reverse proxy's auth")
@@ -53,14 +52,24 @@ func main() {
 		fmt.Fprintln(os.Stderr, "WARNING: --turn-open set — TURN relay handed to ALL authenticated clients (subscription gate bypassed)")
 	}
 
+	var turnEndpoint string
+	turnToken := os.Getenv("SIMBEAM_TURN_API_TOKEN")
+	if *turnKeyID != "" {
+		if turnToken == "" {
+			fmt.Fprintln(os.Stderr, "--turn-key-id set but SIMBEAM_TURN_API_TOKEN is empty")
+			os.Exit(1)
+		}
+		turnEndpoint = signalbroker.CloudflareTURNEndpoint(*turnKeyID)
+	}
+
 	b := signalbroker.New(signalbroker.Config{
-		STUNURLs:   splitNonEmpty(*stun),
-		TURNURLs:   splitNonEmpty(*turn),
-		TURNSecret: *turnSecret,
-		TURNTTL:    *turnTTL,
-		Store:      st,
-		AppSecret:  appSecret,
-		TURNOpen:   *turnOpen,
+		STUNURLs:     splitNonEmpty(*stun),
+		TURNEndpoint: turnEndpoint,
+		TURNAPIToken: turnToken,
+		TURNTTL:      *turnTTL,
+		Store:        st,
+		AppSecret:    appSecret,
+		TURNOpen:     *turnOpen,
 	})
 
 	// Stats live on their own listener so the public reverse proxy (which

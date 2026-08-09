@@ -154,7 +154,7 @@ builds**, so most users never touch it. To run your own, point the daemon at it:
 simbeamd serve --signal wss://your-broker.example/ws
 ```
 
-Self-hosting is a documented, secrets-free path: VPS + systemd, broker + coturn behind Caddy
+Self-hosting is a documented, secrets-free path: VPS + systemd, broker behind Caddy
 (automatic TLS), with a pull-based auto-updater that tracks GitHub Releases. See
 [`deploy/README.md`](deploy/README.md).
 
@@ -194,7 +194,7 @@ simbeam/
 ├── cmd/simbeam-signal/   # reference signalling broker
 ├── internal/             # companion (simctl lifecycle), backend/sim (simbeam-control), rtc (pion), ...
 ├── web/debug/            # local dev reference client (served with --web; prod client is simbeam-web)
-├── deploy/               # self-host scaffolding (systemd, Caddy, coturn, updater)
+├── deploy/               # self-host scaffolding (systemd, Caddy, updater)
 └── docs/                 # architecture, roadmap, decision log
 ```
 

@@ -2,18 +2,18 @@
 # First-time VPS setup for the simbeam signalling server. Run as root from a checkout
 # of this repo's deploy/ directory: sudo ./deploy/bootstrap.sh
 #
-# Installs coturn, lays down the systemd units + updater + Caddyfile, creates the
-# simbeam user and /etc/simbeam/signal.env from the template (if absent), pulls the
-# first simbeam-signal binary, and enables the broker + auto-update timer.
+# Lays down the systemd units + updater + Caddyfile, creates the simbeam user and
+# /etc/simbeam/signal.env from the template (if absent), pulls the first
+# simbeam-signal binary, and enables the broker + auto-update timer. The TURN
+# relay is Cloudflare's managed service — nothing to install here.
 # Idempotent: re-running is safe.
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then echo "run as root (sudo)"; exit 1; fi
 here="$(cd "$(dirname "$0")" && pwd)"
 
-echo "==> installing coturn"
 apt-get update -y
-apt-get install -y coturn curl
+apt-get install -y curl
 
 echo "==> creating simbeam user + state dir"
 id -u simbeam >/dev/null 2>&1 || useradd --system --home /var/lib/simbeam --shell /usr/sbin/nologin simbeam
@@ -43,9 +43,9 @@ systemctl enable --now simbeam-signal-update.timer
 cat <<'NOTE'
 
 Next steps (manual):
-  1. Edit /etc/simbeam/signal.env (app secret, domain, --turn-secret).
-  2. Set coturn static-auth-secret == --turn-secret in /etc/turnserver.conf, set
-     external-ip and realm, then: systemctl enable --now coturn
+  1. Create a TURN key in the Cloudflare dashboard (Realtime -> TURN Keys); copy
+     the key ID and its API token (shown once).
+  2. Edit /etc/simbeam/signal.env: app secret, SIMBEAM_TURN_API_TOKEN, --turn-key-id.
   3. Install Caddy and point deploy/Caddyfile at your domain, then reload Caddy.
   4. systemctl restart simbeam-signal
 NOTE

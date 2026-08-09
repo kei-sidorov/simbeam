@@ -11,7 +11,7 @@
   ничего на сервере руками делать не нужно.
 - В течение ~10 минут systemd-таймер на VPS сам скачает новый бинарь, проверит
   checksum, атомарно подменит и рестартанёт сервис.
-- **Автообновляется только `simbeam-signal`.** Caddy, coturn, env-файл и
+- **Автообновляется только `simbeam-signal`.** Caddy, env-файл и
   macOS-демон (`simbeamd`) — НЕ автообновляются (см. ниже).
 
 ## Что из чего состоит
@@ -21,7 +21,6 @@
 | `simbeam-signal` (брокер) | `/usr/local/bin/simbeam-signal`, юнит `simbeam-signal.service` | **авто** (pull из GitHub Releases) |
 | Апдейтер | `/usr/local/bin/simbeam-signal-update.sh` | руками (`bootstrap.sh` / `git pull` + reinstall) |
 | Таймер | `simbeam-signal-update.timer` (+ `.service`) | руками |
-| coturn | пакет ОС + `/etc/turnserver.conf` | руками (`apt`) |
 | Caddy | пакет ОС + `/etc/caddy/Caddyfile` | руками (`apt`) |
 | Секреты/флаги | `/etc/simbeam/signal.env` | руками |
 | `simbeamd` (macOS) | Homebrew cask | руками: `brew upgrade` |
@@ -140,8 +139,10 @@ sudo systemctl start simbeam-signal-update.service
 - **Сам апдейтер / юниты / Caddyfile** — это deploy-скаффолдинг из репо. После
   `git pull` в чекауте перезапусти `sudo ./deploy/bootstrap.sh` (идемпотентен) или
   переустанови нужный файл вручную и `systemctl daemon-reload`.
-- **coturn / Caddy** — обычными `apt upgrade`. Конфиги (`/etc/turnserver.conf`,
-  `/etc/caddy/Caddyfile`) правятся руками; их значения личные и в репо не лежат.
+- **Caddy** — обычным `apt upgrade`. Конфиг (`/etc/caddy/Caddyfile`) правится
+  руками; его значения личные и в репо не лежат.
+- **TURN** — managed Cloudflare Realtime TURN, обновлять нечего. Ключ и токен
+  живут в `/etc/simbeam/signal.env`.
 - **`/etc/simbeam/signal.env`** — секреты и флаги брокера; меняешь руками, затем
   `sudo systemctl restart simbeam-signal`. Шаблон — `deploy/signal.env.example`.
 - **macOS-демон `simbeamd`** — ставится из Homebrew-тапа, обновляется `brew upgrade`
