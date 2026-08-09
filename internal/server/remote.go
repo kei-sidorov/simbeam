@@ -29,6 +29,11 @@ func toWebRTC(in []signal.ICEServer) []webrtc.ICEServer {
 	return out
 }
 
+// maxEarlyCands bounds the candidates held for a session that does not exist
+// yet (see the TypeCandidate case): enough for any real peer's host+srflx+relay
+// set several times over, small enough that an untrusted broker cannot grow it.
+const maxEarlyCands = 64
+
 // signedAnswer wraps an answer SDP into a signaling Msg whose Sig authenticates
 // the SDP under the daemon's permanent key. The browser verifies it against the
 // pinned daemonPubKey (anti-MITM), which also proves the daemon controls its key
@@ -162,7 +167,8 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 		disp       *rtcDispatch
 		sessCancel context.CancelFunc
 		iceServers []webrtc.ICEServer
-		trickle    bool // broker's verdict: both peers speak trickle ICE
+		trickle    bool                      // broker's verdict: both peers speak trickle ICE
+		earlyCands []webrtc.ICECandidateInit // trickled by the client before its offer
 		authPub    string
 		authNonce  string
 		enrolling  bool
@@ -181,7 +187,7 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 		}
 		sess, disp, sessCancel = nil, nil, nil
 		authPub, authNonce, enrolling, authed = "", "", false, false
-		iceServers, trickle = nil, false
+		iceServers, trickle, earlyCands = nil, false, nil
 	}
 	defer cleanup()
 
@@ -278,9 +284,26 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 				// Set before Answer: this is what makes Answer return without
 				// waiting for gathering. Fires on pion's goroutine — send is
 				// mutex-guarded, so it may race the answer below; the client
-				// buffers candidates that overtake it.
-				ns.OnCandidate(func(c *webrtc.ICECandidate) { _ = send(candidateMsg(c)) })
+				// buffers candidates that overtake it. The sctx check keeps a
+				// dead session quiet: gathering outlives cleanup(), and the
+				// broker would hand those candidates to whatever client is
+				// current — i.e. the one that just displaced this session.
+				ns.OnCandidate(func(c *webrtc.ICECandidate) {
+					if sctx.Err() != nil {
+						return
+					}
+					_ = send(candidateMsg(c))
+				})
 			}
+			// Candidates the client trickled ahead of its offer (RFC 8838 allows
+			// it) waited for this session to exist; Answer applies them once the
+			// remote description is in.
+			for _, c := range earlyCands {
+				if err := ns.AddCandidate(c); err != nil {
+					log.Printf("signal: early candidate rejected: %v", err)
+				}
+			}
+			earlyCands = nil
 			answerSDP, aerr := ns.Answer(m.SDP)
 			if aerr != nil {
 				_ = send(signal.Msg{Type: signal.TypeError, Msg: aerr.Error()})
@@ -291,12 +314,21 @@ func (s *Server) serveOnce(ctx context.Context, signalURL string, id Identity, p
 			log.Printf("signal: answer sent %s after offer (trickle=%v)",
 				time.Since(t0).Round(time.Millisecond), trickle)
 		case signal.TypeCandidate:
-			if sess == nil {
-				continue
+			if !authed || !trickle {
+				continue // never negotiated, or from a client that has not proven its key
 			}
 			init := webrtc.ICECandidateInit{Candidate: m.Candidate, SDPMLineIndex: m.SDPMLineIndex}
 			if m.SDPMid != "" {
 				init.SDPMid = &m.SDPMid
+			}
+			if sess == nil {
+				// Ahead of the offer: hold it for the session about to be built.
+				// Capped because the broker is untrusted — a real peer sends a
+				// handful, and dropping the excess only costs a candidate pair.
+				if len(earlyCands) < maxEarlyCands {
+					earlyCands = append(earlyCands, init)
+				}
+				continue
 			}
 			if err := sess.AddCandidate(init); err != nil {
 				log.Printf("signal: remote candidate rejected: %v", err)

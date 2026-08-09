@@ -238,8 +238,9 @@ CLIENT                         BROKER                         DAEMON
   │                                                             │
   │  offer(sdp) ────────────────►│  offer(sdp) ────────────────►│
   │◄ answer(sdp, sig) ───────────│◄ answer(sdp, sig) ───────────│
-  │  candidate ────────────────►│   candidate ────────────────►│   (trickle, both ways)
-  │                                                             │
+  │  candidate ─────────────────►│  candidate ─────────────────►│   (trickle: both ways,
+  │◄ candidate ──────────────────│◄ candidate ──────────────────│    interleaved with the
+  │                                                             │    answer, not after it)
   │═══════ direct peer-to-peer WebRTC (video + control) ════════│
 ```
 
