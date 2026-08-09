@@ -76,3 +76,27 @@ func TestTURNFetcherAPIErrorSurfaces(t *testing.T) {
 		t.Fatal("want an error on 401")
 	}
 }
+
+// TestUsableRelayURLsDropsPort53: the port-53 relay is the one that stalls
+// gathering (7.81s vs 0.05s measured), so it must not reach either peer.
+func TestUsableRelayURLsDropsPort53(t *testing.T) {
+	got := usableRelayURLs([]string{
+		"turn:turn.cloudflare.com:3478?transport=udp",
+		"turn:turn.cloudflare.com:53?transport=udp",
+		"turn:turn.cloudflare.com:80?transport=tcp",
+		"turns:turn.cloudflare.com:443?transport=tcp",
+	})
+	want := []string{
+		"turn:turn.cloudflare.com:3478?transport=udp",
+		"turn:turn.cloudflare.com:80?transport=tcp",
+		"turns:turn.cloudflare.com:443?transport=tcp",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}

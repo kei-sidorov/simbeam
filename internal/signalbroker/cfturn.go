@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,26 @@ import (
 // Realtime TURN key ID (https://developers.cloudflare.com/realtime/turn/).
 func CloudflareTURNEndpoint(keyID string) string {
 	return "https://rtc.live.cloudflare.com/v1/turn/keys/" + keyID + "/credentials/generate-ice-servers"
+}
+
+// usableRelayURLs drops Cloudflare's port-53 relay from the list it returns.
+//
+// Non-trickle ICE means neither peer sends its SDP until gathering is complete,
+// so ONE dead URL delays the whole connection. Port 53 is the DNS port and
+// carriers routinely intercept it: measured against the live broker, the six
+// URLs Cloudflare hands back gather in 7.81s, and the same set minus :53 in
+// 0.05s. On a 4G iPad :53 produced no relay candidate at all. Everything it
+// could get through is already covered by turns:443, which is the URL built for
+// hostile networks.
+func usableRelayURLs(urls []string) []string {
+	out := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if strings.Contains(u, ":53?") || strings.HasSuffix(u, ":53") {
+			continue
+		}
+		out = append(out, u)
+	}
+	return out
 }
 
 // turnFetcher issues relay credentials from Cloudflare Realtime TURN. Unlike
@@ -77,6 +98,7 @@ func (f *turnFetcher) get(ctx context.Context) (signal.ICEServer, error) {
 	// which is the entry with credentials (our own STUN goes out to everyone).
 	for _, s := range out.ICEServers {
 		if s.Credential != "" {
+			s.URLs = usableRelayURLs(s.URLs)
 			f.cached, f.refresh = s, f.now().Add(f.ttl/2)
 			return s, nil
 		}
