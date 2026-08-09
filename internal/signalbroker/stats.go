@@ -22,11 +22,12 @@ type Stats struct {
 	ProofsBadTotal int64 `json:"proofs_failed_total"`        // broker-challenge signature rejected
 	TURNGranted    int64 `json:"turn_granted_total"`         // iceServers handed out WITH a relay
 	OfflineTotal   int64 `json:"joins_daemon_offline_total"` // join for a daemon that was not present
+	BusyTotal      int64 `json:"joins_daemon_busy_total"`    // join refused: another client held the session
 }
 
 // counters are the process-lifetime totals behind Stats.
 type counters struct {
-	joins, pairings, proofsOK, proofsBad, turnGranted, offline atomic.Int64
+	joins, pairings, proofsOK, proofsBad, turnGranted, offline, busy atomic.Int64
 }
 
 // Stats snapshots the gauges and totals.
@@ -58,6 +59,7 @@ func (b *Broker) Stats() Stats {
 	s.ProofsBadTotal = b.n.proofsBad.Load()
 	s.TURNGranted = b.n.turnGranted.Load()
 	s.OfflineTotal = b.n.offline.Load()
+	s.BusyTotal = b.n.busy.Load()
 	return s
 }
 

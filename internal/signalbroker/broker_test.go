@@ -217,8 +217,45 @@ func TestBadBrokerSigRejected(t *testing.T) {
 	}
 }
 
+// TestSecondClientKeyGetsBusy: a join from a DIFFERENT client key while one is
+// in flight is refused with CodeBusy, and the sitting client keeps the daemon
+// (it still receives relayed messages) instead of being displaced.
+func TestSecondClientKeyGetsBusy(t *testing.T) {
+	b := New(Config{STUNURLs: []string{"stun:x"}})
+	srv := httptest.NewServer(b.Handler())
+	defer srv.Close()
+	url := wsURL(t, srv)
+
+	pubA, _, _ := signal.GenerateKeyPair()
+	pubB, _, _ := signal.GenerateKeyPair()
+	daemon := dial(t, url)
+	_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeRegister, Role: signal.RoleDaemon, Daemon: "D"})
+
+	a := dial(t, url)
+	_ = a.WriteJSON(signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: "D", PubKey: pubA})
+	if m := readMsg(t, daemon); m.Type != signal.TypeConnect {
+		t.Fatalf("daemon want connect for A, got %+v", m)
+	}
+
+	second := dial(t, url)
+	_ = second.WriteJSON(signal.Msg{Type: signal.TypeJoin, Role: signal.RoleClient, Daemon: "D", PubKey: pubB})
+	if m := readMsg(t, second); m.Type != signal.TypeError || m.Code != signal.CodeBusy {
+		t.Fatalf("want busy error for the second key, got %+v", m)
+	}
+
+	// A still owns the slot: the daemon's challenge reaches it.
+	_ = daemon.WriteJSON(signal.Msg{Type: signal.TypeChallenge, Nonce: "N"})
+	if m := readMsg(t, a); m.Type != signal.TypeChallenge {
+		t.Fatalf("client A want challenge, got %+v", m)
+	}
+	if got := b.Stats().BusyTotal; got != 1 {
+		t.Fatalf("busy total = %d, want 1", got)
+	}
+}
+
 // TestSecondClientDisplacesFirst verifies the one-client-at-a-time takeover is
-// clean: when a second client joins the same daemon, the first client's
+// clean: when the SAME client key joins again (a device reconnecting), the first
+// connection's
 // connection is closed (its goroutine stops) so it cannot inject proof/offer into
 // the new client's session, and the daemon ends up handshaking the second client.
 func TestSecondClientDisplacesFirst(t *testing.T) {

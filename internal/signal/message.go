@@ -41,6 +41,7 @@ const (
 // text (which is fragile — see BLIND-SPOTS #4). Msg stays human-readable.
 const (
 	CodeOffline     = "offline"      // join: the target daemon is not registered
+	CodeBusy        = "busy"         // join: another client already holds this daemon's single session
 	CodePairExpired = "pair_expired" // connect: the enrollment window expired or was cancelled
 	CodePairUsed    = "pair_used"    // connect: the enrollment window was already consumed
 	CodePairInvalid = "pair_invalid" // connect: no window armed, or the pairing secret did not match

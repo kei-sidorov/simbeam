@@ -475,7 +475,11 @@ async function signal3C(s, gen) {
         break;
       }
       case 'error':
-        if (String(m.msg).includes('offline')) { scheduleReconnect(); }
+        // busy: another device holds the Mac's single session — say so and stop
+        // retrying (teardown kills the reconnect), otherwise we'd join the very
+        // displacement fight this code exists to prevent.
+        if (m.code === 'busy') { alert(m.msg); teardown(); }
+        else if (String(m.msg).includes('offline')) { scheduleReconnect(); }
         else { alert('pairing error: ' + m.msg); teardown(); }
         break;
       case 'peerLeft':

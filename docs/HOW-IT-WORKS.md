@@ -600,6 +600,7 @@ control codes:
 | `code` | Sent by | Meaning |
 |--------|---------|---------|
 | `offline`      | broker | The target Mac's daemon is not currently registered. Wake the Mac and retry. |
+| `busy`         | broker | Another client holds this Mac's single session. Close that session, then retry — do not auto-retry in a loop. |
 | `pair_expired` | daemon | The pairing window expired (TTL passed) or was cancelled. Generate a fresh QR. |
 | `pair_used`    | daemon | The one-time pairing secret was already consumed by a successful pairing. Generate a fresh QR. |
 | `pair_invalid` | daemon | No pairing window is open, or the enrollment proof didn't match. |
@@ -608,7 +609,9 @@ control codes:
 | attach codes   | daemon | Listed with [Attaching a simulator](#attaching-a-simulator) — they carry `retryable` too. |
 
 `pair_*` codes accompany a rejected `join`/`connect` during pairing; `offline` comes back when you
-`join` a Mac that isn't online. Lifecycle failures also carry `operation` (which request failed) and
+`join` a Mac that isn't online, `busy` when someone else is already on it. A `join` carrying the key
+that already holds the session is a reconnect, not a second viewer: it takes the slot over and never
+gets `busy`. Lifecycle failures also carry `operation` (which request failed) and
 `udid` (which device). An `error` with no `code` is a generic failure — surface its `msg`.
 
 ---

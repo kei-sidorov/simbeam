@@ -253,7 +253,19 @@ func (b *Broker) serveClient(c *conn, join signal.Msg) {
 	cl := &clientConn{c: c, pubKey: join.PubKey, bNonce: bNonce, trickle: join.Trickle}
 	d.mu.Lock()
 	old := d.client
-	d.client = cl // one client at a time; a new client replaces the previous
+	// One client at a time. A rejoin from the SAME key is that device coming back
+	// (reconnect after a blip) and takes over its own slot; a DIFFERENT key is a
+	// second viewer and is told so instead of silently killing the live session —
+	// two auto-reconnecting clients used to displace each other about once a
+	// second and neither ever saw video.
+	if old != nil && old.pubKey != cl.pubKey {
+		d.mu.Unlock()
+		b.n.busy.Add(1)
+		_ = c.send(signal.Msg{Type: signal.TypeError, Code: signal.CodeBusy,
+			Msg: "another client is connected to this Mac — disconnect it first"})
+		return
+	}
+	d.client = cl
 	d.mu.Unlock()
 	if old != nil {
 		// Stop the displaced client's goroutine so it can't write its
