@@ -131,14 +131,20 @@ func runPair(argv []string) error {
 	if len(argv) > 0 {
 		return fmt.Errorf("pair takes no arguments")
 	}
-	blob, err := os.ReadFile(controlFilePath())
-	if err != nil {
-		return errors.New("no running daemon found — start one with 'simbeamd service install' (or 'simbeamd serve')")
+	// readInfo re-reads the control file on every attempt: right after
+	// `service install` the daemon may still be booting and writing it.
+	readInfo := func() (controlInfo, error) {
+		var info controlInfo
+		blob, err := os.ReadFile(controlFilePath())
+		if err != nil {
+			return info, errors.New("no running daemon found — start one with 'simbeamd service install' (or 'simbeamd serve')")
+		}
+		if err := json.Unmarshal(blob, &info); err != nil {
+			return info, fmt.Errorf("control file corrupt (%s): %w", controlFilePath(), err)
+		}
+		return info, nil
 	}
 	var info controlInfo
-	if err := json.Unmarshal(blob, &info); err != nil {
-		return fmt.Errorf("control file corrupt (%s): %w", controlFilePath(), err)
-	}
 	call := func(method, path string, out any) error {
 		req, err := http.NewRequest(method, "http://"+info.Addr+path, nil)
 		if err != nil {
@@ -156,9 +162,23 @@ func runPair(argv []string) error {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 
+	// Arm the window, retrying briefly: install.sh (and `service install &&
+	// simbeamd pair` by hand) runs us moments after launchd bootstrapped the
+	// daemon, before its control file and listener exist.
 	var rep pairReply
-	if err := call("POST", "/pair", &rep); err != nil {
-		return err
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var err error
+		if info, err = readInfo(); err == nil {
+			err = call("POST", "/pair", &rep)
+		}
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	ttl := time.Duration(rep.TTLSeconds) * time.Second
 	fmt.Printf("Pairing window open for %s. Scan with your iPad, or open:\n\n  %s\n\n", ttl, rep.URL)

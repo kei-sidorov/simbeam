@@ -56,7 +56,8 @@ func runUpdate(argv []string) error {
 		return fmt.Errorf("update is for the macOS install; Linux boxes update via their deploy timer")
 	}
 
-	env := append(os.Environ(), "SIMBEAM_INSTALL_DIR="+filepath.Dir(exe))
+	// SIMBEAM_NO_PAIR: an update must never pop a pairing window.
+	env := append(os.Environ(), "SIMBEAM_INSTALL_DIR="+filepath.Dir(exe), "SIMBEAM_NO_PAIR=1")
 	if plist, _, perr := servicePaths(); perr == nil {
 		if _, serr := os.Stat(plist); os.IsNotExist(serr) {
 			// No service on this machine — updating must not surprise-install one.

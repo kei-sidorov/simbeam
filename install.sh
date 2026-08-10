@@ -109,7 +109,14 @@ main() {
     elif [ "$HAVE_XCODE" = 1 ]; then
         if "${INSTALL_DIR}/simbeamd" service install >/dev/null 2>&1; then
             log "background service installed and running"
-            log "ready. pair your iPad with: simbeamd pair"
+            # Jump straight into pairing (QR in this terminal). Skipped when not
+            # a terminal (CI) or when `simbeamd update` re-runs this script.
+            if [ "${SIMBEAM_NO_PAIR:-0}" != 1 ] && [ -t 1 ]; then
+                echo ""
+                "${INSTALL_DIR}/simbeamd" pair || true
+            else
+                log "ready. pair your iPad with: simbeamd pair"
+            fi
         else
             warn "could not start the background service — run manually: simbeamd service install"
         fi
