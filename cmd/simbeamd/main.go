@@ -6,6 +6,7 @@
 //     Linux-friendly, unattended, multi-use pairing (App Review / demos).
 //   - unpair: revoke a paired client (Phase 3C).
 //   - pair: open a pairing window on the running daemon via its local control API.
+//   - update: self-update the curl-channel install (brew installs defer to brew).
 //   - service: install/uninstall serve as a macOS launchd LaunchAgent.
 package main
 
@@ -114,6 +115,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "update":
+		if err := runUpdate(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -134,6 +140,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  simbeamd demo    Serve a headless-browser demo device instead of a simulator (flags: --signal, --url, --chrome, --pair-secret, ...)")
 	fmt.Fprintln(w, "  simbeamd unpair  Revoke a paired client: simbeamd unpair <clientPubKey>")
 	fmt.Fprintln(w, "  simbeamd pair    Pair a new device with the running daemon (QR in the terminal)")
+	fmt.Fprintln(w, "  simbeamd update  Update simbeamd + simbeam-control to the latest release")
 	fmt.Fprintln(w, "  simbeamd service Run serve as a background launchd agent: simbeamd service install|uninstall|start|stop|status")
 	fmt.Fprintln(w, "  simbeamd version Print the version")
 	fmt.Fprintln(w, "  simbeamd help    Show this help")
@@ -209,7 +216,7 @@ func runServe(argv []string) error {
 			CachePath: defaultStatePath("update-check.json"),
 		}
 		go chk.Run(context.Background(), func(latest string) {
-			fmt.Printf("simbeamd %s → %s available: brew upgrade --cask simbeamd && brew upgrade simbeam-control\n", version, latest)
+			fmt.Printf("simbeamd %s → %s available: %s\n", version, latest, updateHint())
 			srv.SetLatestVersion(latest)
 		})
 	}

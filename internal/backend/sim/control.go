@@ -15,6 +15,7 @@ import (
 	"log"
 	"math"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,7 +88,12 @@ const controlHandshakeTimeout = 25 * time.Second
 func CheckControlProtocol(ctx context.Context, bin string) error {
 	out, err := exec.CommandContext(ctx, bin, "--protocol").Output()
 	if v := controlProtocol(out, err); v < requiredControlProtocol {
-		return fmt.Errorf("simbeam-control at %s speaks control protocol %d, this simbeamd needs >= %d — update it with `brew upgrade simbeam-control`", bin, v, requiredControlProtocol)
+		hint := "simbeamd update"
+		if resolved, rerr := filepath.EvalSymlinks(bin); rerr == nil &&
+			(strings.Contains(resolved, "/Caskroom/") || strings.Contains(resolved, "/Cellar/")) {
+			hint = "brew upgrade simbeam-control"
+		}
+		return fmt.Errorf("simbeam-control at %s speaks control protocol %d, this simbeamd needs >= %d — update it with `%s`", bin, v, requiredControlProtocol, hint)
 	}
 	return nil
 }
