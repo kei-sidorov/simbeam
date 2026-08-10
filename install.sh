@@ -72,7 +72,9 @@ main() {
     chmod +x "${INSTALL_DIR}/simbeamd" "${INSTALL_DIR}/simbeam-control"
     log "installed simbeamd + simbeam-control to ${INSTALL_DIR}"
 
+    HAVE_XCODE=1
     if ! /usr/bin/xcode-select -p 2>/dev/null | grep -q "\.app"; then
+        HAVE_XCODE=0
         warn "full Xcode not detected — simbeam-control needs Xcode (not just Command Line Tools)"
     fi
 
@@ -96,9 +98,20 @@ main() {
             ;;
     esac
 
+    # Start the daemon as a background service right away (launchd LaunchAgent:
+    # survives the terminal and reboots). Skipped without Xcode — serve would
+    # just crash-loop until Xcode is installed.
     echo ""
-    log "ready. run 'simbeamd serve' to start (press P there to pair your iPad),"
-    log "then 'simbeamd service install' to keep it running in the background."
+    if [ "$HAVE_XCODE" = 1 ]; then
+        if "${INSTALL_DIR}/simbeamd" service install >/dev/null 2>&1; then
+            log "background service installed and running"
+            log "ready. pair your iPad with: simbeamd pair"
+        else
+            warn "could not start the background service — run manually: simbeamd service install"
+        fi
+    else
+        warn "install Xcode, then run: simbeamd service install && simbeamd pair"
+    fi
     echo ""
 }
 

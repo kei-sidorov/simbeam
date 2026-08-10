@@ -29,8 +29,12 @@ curl -fsSL https://simbeam.dev/install.sh | sh
 
 The script is [`install.sh`](install.sh) in this repo (the URL above redirects to it) and
 downloads the same archives as the GitHub Releases page — read it first if you like, or
-build from source below. To run the daemon in the background across reboots:
-`simbeamd service install` (pair first via `simbeamd serve`, press P).
+build from source below. It also starts the daemon as a background service (a launchd
+LaunchAgent — survives the terminal and reboots). Then pairing an iPad is one command:
+
+```bash
+simbeamd pair   # prints a QR; scan it, done
+```
 
 Alternatively, the daemon ships as a Homebrew cask (an unsigned, prebuilt binary; the cask strips the
 macOS quarantine flag post-install). Its only dependency is `simbeam-control`, vendored in the
