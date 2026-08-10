@@ -20,17 +20,21 @@ func runService(argv []string) error {
 		return fmt.Errorf("service is macOS-only (launchd); on Linux use a systemd unit (see deploy/)")
 	}
 	if len(argv) == 0 {
-		return fmt.Errorf("usage: simbeamd service install|uninstall|status")
+		return fmt.Errorf("usage: simbeamd service install|uninstall|start|stop|status")
 	}
 	switch argv[0] {
 	case "install":
 		return serviceInstall()
 	case "uninstall":
 		return serviceUninstall()
+	case "start":
+		return serviceStart()
+	case "stop":
+		return serviceStop()
 	case "status":
 		return serviceStatus()
 	default:
-		return fmt.Errorf("unknown service command %q (want install|uninstall|status)", argv[0])
+		return fmt.Errorf("unknown service command %q (want install|uninstall|start|stop|status)", argv[0])
 	}
 }
 
@@ -104,7 +108,41 @@ func serviceInstall() error {
 		return err
 	}
 	fmt.Printf("service installed and started (%s)\nlogs: %s\n", serviceLabel, logPath)
-	fmt.Println("to pair a new device: simbeamd service uninstall, run 'simbeamd serve' and press P, then reinstall")
+	fmt.Println("to pair a new device: simbeamd service stop, run 'simbeamd serve' and press P, then simbeamd service start")
+	return nil
+}
+
+// serviceStart re-bootstraps an installed agent; serviceStop boots it out but
+// keeps the plist, so launchd will pick it up again at next login (RunAtLoad)
+// or via `service start` — the pair covers "pause to pair a new device" without
+// the uninstall/install dance.
+func serviceStart() error {
+	plist, _, err := servicePaths()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(plist); os.IsNotExist(err) {
+		return fmt.Errorf("service not installed (run: simbeamd service install)")
+	}
+	if err := launchctl("bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plist); err != nil {
+		return err
+	}
+	fmt.Println("service started")
+	return nil
+}
+
+func serviceStop() error {
+	plist, _, err := servicePaths()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(plist); os.IsNotExist(err) {
+		return fmt.Errorf("service not installed (run: simbeamd service install)")
+	}
+	if err := launchctl("bootout", serviceTarget()); err != nil {
+		return err
+	}
+	fmt.Println("service stopped (starts again at next login or 'simbeamd service start')")
 	return nil
 }
 
