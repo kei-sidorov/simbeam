@@ -76,6 +76,16 @@ main() {
         warn "full Xcode not detected — simbeam-control needs Xcode (not just Command Line Tools)"
     fi
 
+    # A Homebrew copy alongside this one means PATH order silently decides
+    # which binary runs (and `brew upgrade` only updates its own).
+    for dir in /opt/homebrew/bin /usr/local/bin; do
+        if [ "$dir" != "$INSTALL_DIR" ] && [ -x "${dir}/simbeamd" ]; then
+            warn "another simbeamd found at ${dir}/simbeamd (Homebrew?) — keep one:"
+            echo "      brew uninstall --cask simbeamd && brew uninstall simbeam-control"
+            echo "      (or remove ${INSTALL_DIR}/simbeamd and stay on Homebrew)"
+        fi
+    done
+
     case ":${PATH}:" in
         *":${INSTALL_DIR}:"*) ;;
         *)
