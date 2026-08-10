@@ -20,7 +20,19 @@ WebRTC link. The Mac makes only outbound connections — **zero open ports**.
 
 ## Install
 
-The daemon ships as a Homebrew cask (an unsigned, prebuilt binary; the cask strips the
+Fastest — the install script (no sudo, no Homebrew; drops `simbeamd` + `simbeam-control`
+into `~/.local/bin` after verifying release checksums):
+
+```bash
+curl -fsSL https://simbeam.dev/install.sh | sh
+```
+
+The script is [`install.sh`](install.sh) in this repo (the URL above redirects to it) and
+downloads the same archives as the GitHub Releases page — read it first if you like, or
+build from source below. To run the daemon in the background across reboots:
+`simbeamd service install` (pair first via `simbeamd serve`, press P).
+
+Alternatively, the daemon ships as a Homebrew cask (an unsigned, prebuilt binary; the cask strips the
 macOS quarantine flag post-install). Its only dependency is `simbeam-control`, vendored in the
 same tap — one command, no extra taps:
 
