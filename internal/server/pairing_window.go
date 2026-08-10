@@ -84,3 +84,21 @@ func NewPairingWindow() *pairingWindow { return &pairingWindow{} }
 func (p *pairingWindow) Open(secret string, now time.Time, ttl time.Duration) {
 	p.open(secret, now, ttl)
 }
+
+// State reports the window's phase for the daemon's local control API: "none"
+// (never armed), "open", "consumed" (a pairing used it), or "expired" (TTL
+// passed or cancelled). Mirrors verify's precedence.
+func (p *pairingWindow) State(now time.Time) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case p.consumed:
+		return "consumed"
+	case p.secret == "" && p.expires.IsZero():
+		return "none"
+	case p.cancelled || now.After(p.expires):
+		return "expired"
+	default:
+		return "open"
+	}
+}

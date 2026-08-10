@@ -108,7 +108,7 @@ func serviceInstall() error {
 		return err
 	}
 	fmt.Printf("service installed and started (%s)\nlogs: %s\n", serviceLabel, logPath)
-	fmt.Println("to pair a new device: simbeamd service stop, run 'simbeamd serve' and press P, then simbeamd service start")
+	fmt.Println("pair a device any time with: simbeamd pair")
 	return nil
 }
 

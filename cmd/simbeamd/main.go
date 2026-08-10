@@ -5,6 +5,7 @@
 //   - demo: stream a headless-browser demo device instead of simulators —
 //     Linux-friendly, unattended, multi-use pairing (App Review / demos).
 //   - unpair: revoke a paired client (Phase 3C).
+//   - pair: open a pairing window on the running daemon via its local control API.
 //   - service: install/uninstall serve as a macOS launchd LaunchAgent.
 package main
 
@@ -108,6 +109,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "pair":
+		if err := runPair(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -127,6 +133,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  simbeamd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
 	fmt.Fprintln(w, "  simbeamd demo    Serve a headless-browser demo device instead of a simulator (flags: --signal, --url, --chrome, --pair-secret, ...)")
 	fmt.Fprintln(w, "  simbeamd unpair  Revoke a paired client: simbeamd unpair <clientPubKey>")
+	fmt.Fprintln(w, "  simbeamd pair    Pair a new device with the running daemon (QR in the terminal)")
 	fmt.Fprintln(w, "  simbeamd service Run serve as a background launchd agent: simbeamd service install|uninstall|start|stop|status")
 	fmt.Fprintln(w, "  simbeamd version Print the version")
 	fmt.Fprintln(w, "  simbeamd help    Show this help")
@@ -419,6 +426,17 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 		ui.retire(ansiRed + "✗  pairing CANCELLED — code above is dead" + ansiReset)
 	}
 
+	// Local control API: lets a sibling `simbeamd pair` arm this process's
+	// window — the only way to pair when serve runs headless under launchd.
+	ctrl, cerr := startControl(win, func(secret string) string {
+		return signal.PairingURL(base, pairSignalArg(signalURL), id.PubB64, secret)
+	}, pairTTL)
+	if cerr != nil {
+		log.Printf("local control API disabled (simbeamd pair won't work): %v", cerr)
+	} else {
+		defer ctrl.stop()
+	}
+
 	// When a new device finishes pairing, the single-use window is consumed: grey
 	// out the QR still on screen and confirm with the client's key.
 	srv.OnEnroll(func(clientPubKey string) {
@@ -427,6 +445,9 @@ func runRemote(srv *server.Server, signalURL, clientURL, addr, webDir, identityP
 			short = short[:16]
 		}
 		ui.retire(ansiGreen + "✓  paired " + short + "… — enrollment window closed" + ansiReset)
+		if ctrl != nil {
+			ctrl.noteEnrolled(clientPubKey)
+		}
 	})
 
 	go watchKeys(ctx, cancel, onPair, onCancel)
