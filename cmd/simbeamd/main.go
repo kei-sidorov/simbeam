@@ -5,6 +5,7 @@
 //   - demo: stream a headless-browser demo device instead of simulators —
 //     Linux-friendly, unattended, multi-use pairing (App Review / demos).
 //   - unpair: revoke a paired client (Phase 3C).
+//   - service: install/uninstall serve as a macOS launchd LaunchAgent.
 package main
 
 import (
@@ -102,6 +103,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "service":
+		if err := runService(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -121,6 +127,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "  simbeamd serve   Serve REST API + WebSocket stream (flags: --addr, --web, --signal, --client-url, --identity, --clients, --pair-ttl)")
 	fmt.Fprintln(w, "  simbeamd demo    Serve a headless-browser demo device instead of a simulator (flags: --signal, --url, --chrome, --pair-secret, ...)")
 	fmt.Fprintln(w, "  simbeamd unpair  Revoke a paired client: simbeamd unpair <clientPubKey>")
+	fmt.Fprintln(w, "  simbeamd service Run serve as a background launchd agent: simbeamd service install|uninstall|status")
 	fmt.Fprintln(w, "  simbeamd version Print the version")
 	fmt.Fprintln(w, "  simbeamd help    Show this help")
 }
