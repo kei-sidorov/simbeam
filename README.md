@@ -36,6 +36,9 @@ LaunchAgent — survives the terminal and reboots). Then pairing an iPad is one 
 simbeamd pair   # prints a QR; scan it, done
 ```
 
+Update any time with `simbeamd update` (the daemon also checks GitHub Releases daily and
+says so when a newer version exists).
+
 Alternatively, the daemon ships as a Homebrew cask (an unsigned, prebuilt binary; the cask strips the
 macOS quarantine flag post-install). Its only dependency is `simbeam-control`, vendored in the
 same tap — one command, no extra taps:

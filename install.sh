@@ -100,9 +100,13 @@ main() {
 
     # Start the daemon as a background service right away (launchd LaunchAgent:
     # survives the terminal and reboots). Skipped without Xcode — serve would
-    # just crash-loop until Xcode is installed.
+    # just crash-loop until Xcode is installed. `simbeamd update` sets
+    # SIMBEAM_NO_SERVICE=1 when no service is installed, so an update never
+    # surprise-installs one.
     echo ""
-    if [ "$HAVE_XCODE" = 1 ]; then
+    if [ "${SIMBEAM_NO_SERVICE:-0}" = 1 ]; then
+        log "ready (service step skipped)."
+    elif [ "$HAVE_XCODE" = 1 ]; then
         if "${INSTALL_DIR}/simbeamd" service install >/dev/null 2>&1; then
             log "background service installed and running"
             log "ready. pair your iPad with: simbeamd pair"
